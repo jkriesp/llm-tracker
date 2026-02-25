@@ -12,8 +12,11 @@ from pathlib import Path
 
 import rumps
 
+from Foundation import NSMakeRect
+
 from providers import BaseProvider, ProviderStatus
 from providers.claude import ClaudeProvider, SUPPORTED_BROWSERS
+from views import ErrorView, HeaderView, MetricView, MENU_WIDTH, METRIC_HEIGHT
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -58,11 +61,6 @@ def time_remaining(iso_timestamp: str | None) -> str:
     return " ".join(parts) or "<1m"
 
 
-def bar(pct: float, width: int = 10) -> str:
-    filled = round(pct / 100 * width)
-    return "\u2588" * filled + "\u2591" * (width - filled)
-
-
 def indicator(pct: float) -> str:
     if pct >= 90:
         return "\U0001f534"
@@ -94,6 +92,8 @@ class UsageTrackerApp(rumps.App):
 
         # ── Build menu ────────────────────────────────────────────────────
         self.provider_sections: dict[str, list[rumps.MenuItem]] = {}
+        self.metric_views: dict[str, list[MetricView]] = {}
+        self.error_views: dict[str, ErrorView] = {}
         self.updated_item = rumps.MenuItem("")
 
         for provider, _key in self.providers:
@@ -235,13 +235,36 @@ class UsageTrackerApp(rumps.App):
     # ── Menu construction ─────────────────────────────────────────────────
 
     def _create_provider_menu_items(self, provider: BaseProvider) -> list[rumps.MenuItem]:
-        header = rumps.MenuItem(f"\u2500\u2500 {provider.name} \u2500\u2500")
+        # Header with custom view
+        header = rumps.MenuItem("")
         header.set_callback(None)
+        header_view = HeaderView.alloc().initWithTitle_(provider.name)
+        header._menuitem.setView_(header_view)
         items = [header]
+
+        # Error row (hidden by default)
+        err_item = rumps.MenuItem("")
+        err_item.set_callback(None)
+        err_view = ErrorView.alloc().initWithFrame_(NSMakeRect(0, 0, MENU_WIDTH, 28))
+        err_item._menuitem.setView_(err_view)
+        err_item._menuitem.setHidden_(True)
+        self.error_views[provider.name] = err_view
+        items.append(err_item)
+
+        # Metric rows with custom views
+        views: list[MetricView] = []
         for _ in range(6):
-            item = rumps.MenuItem("  ...")
+            item = rumps.MenuItem("")
             item.set_callback(None)
+            view = MetricView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, MENU_WIDTH, METRIC_HEIGHT)
+            )
+            item._menuitem.setView_(view)
+            item._menuitem.setHidden_(True)
             items.append(item)
+            views.append(view)
+        self.metric_views[provider.name] = views
+
         return items
 
     def _build_menu(self) -> None:
@@ -330,20 +353,32 @@ class UsageTrackerApp(rumps.App):
 
     def _update_provider_section(self, name: str, status: ProviderStatus) -> None:
         items = self.provider_sections[name]
+        views = self.metric_views[name]
+        err_view = self.error_views[name]
 
         if status.error:
-            items[1].title = f"  \u26a0 {status.error}"
-            for item in items[2:]:
-                item.title = ""
+            # Show error, hide metrics
+            err_view.update(status.error)
+            items[1]._menuitem.setHidden_(False)
+            for i, view in enumerate(views):
+                view.clear()
+                items[i + 2]._menuitem.setHidden_(True)
             return
 
-        for i, item in enumerate(items[1:], start=0):
+        # Hide error row
+        err_view.clear()
+        items[1]._menuitem.setHidden_(True)
+
+        # Update metric views
+        for i, view in enumerate(views):
             if i < len(status.metrics):
                 m = status.metrics[i]
                 resets = time_remaining(m.resets_at)
-                item.title = f"  {m.label}: {bar(m.utilization)} {m.utilization:.0f}%  (resets in {resets})"
+                view.update(m.label, m.utilization, f"resets in {resets}")
+                items[i + 2]._menuitem.setHidden_(False)
             else:
-                item.title = ""
+                view.clear()
+                items[i + 2]._menuitem.setHidden_(True)
 
     # ── Callbacks ─────────────────────────────────────────────────────────
 
