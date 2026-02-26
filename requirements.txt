@@ -1,3 +1,4 @@
 rumps==0.4.0
-requests==2.32.4
+requests==2.32.5
 pycookiecheat==0.8.0
+py2app==0.28.10

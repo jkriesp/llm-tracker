@@ -14,6 +14,7 @@ import rumps
 
 from Foundation import NSMakeRect
 
+import login_item
 from providers import BaseProvider, ProviderStatus
 from providers.claude import ClaudeProvider, SUPPORTED_BROWSERS
 from views import ErrorView, HeaderView, MetricView, MENU_WIDTH, METRIC_HEIGHT
@@ -277,6 +278,12 @@ class UsageTrackerApp(rumps.App):
 
         all_items.append(self.updated_item)
         all_items.append(rumps.MenuItem("Refresh", callback=self._on_refresh))
+
+        self.login_item = rumps.MenuItem(
+            "Launch at Login", callback=self._on_toggle_login
+        )
+        self.login_item.state = login_item.is_enabled()
+        all_items.append(self.login_item)
         all_items.append(None)
 
         # Configure sub-menu per provider with auto + manual options
@@ -385,6 +392,26 @@ class UsageTrackerApp(rumps.App):
     def _on_refresh(self, _: rumps.MenuItem) -> None:
         self.title = "Usage ..."
         self._refresh_all()
+
+    def _on_toggle_login(self, sender: rumps.MenuItem) -> None:
+        if login_item.is_enabled():
+            login_item.disable()
+            sender.state = False
+        else:
+            if login_item.enable():
+                sender.state = True
+            else:
+                rumps.alert(
+                    title="Not Running as .app",
+                    message=(
+                        "Launch at Login requires a bundled .app.\n\n"
+                        "Build it first:\n"
+                        "  ./build.sh\n\n"
+                        "Then open:\n"
+                        "  dist/CC Usage Tracker.app"
+                    ),
+                    ok="OK",
+                )
 
     def _on_refresh_cookie(self, provider: ClaudeProvider) -> None:
         """Re-extract the cookie from the browser without full re-setup."""
