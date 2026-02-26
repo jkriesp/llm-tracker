@@ -115,6 +115,10 @@ cc-usage-tracker/
 └── requirements.txt
 ```
 
+## Contributing
+
+The `main` branch is protected. All changes require a pull request — direct pushes to main are blocked. Create a feature branch, open a PR, and merge from there.
+
 ## License
 
 MIT
