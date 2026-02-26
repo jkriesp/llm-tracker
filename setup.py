@@ -21,11 +21,14 @@ OPTIONS = {
         "pycookiecheat",
         "certifi",
         "cryptography",
+        "cffi",
+        "charset_normalizer",
         "providers",
     ],
     "includes": [
         "views",
         "login_item",
+        "_cffi_backend",
     ],
 }
 
