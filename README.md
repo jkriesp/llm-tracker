@@ -25,8 +25,8 @@ A macOS menu bar app that shows your Claude API usage at a glance.
 ## Install
 
 ```bash
-git clone https://github.com/yourusername/cc-usage-tracker.git
-cd cc-usage-tracker
+git clone https://github.com/jkriesp/llm-tracker.git
+cd llm-tracker
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
