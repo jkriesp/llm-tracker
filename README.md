@@ -14,6 +14,8 @@ A macOS menu bar app that shows your Claude API usage at a glance.
 - **Automatic setup** — extracts your session cookie from the browser, no copy-pasting needed
 - **Secure** — session key stored in macOS Keychain, never in a plaintext file
 - **Auto cookie refresh** — re-extracts from the browser on session expiry (401)
+- **Standalone .app bundle** — build a native macOS app, no terminal needed
+- **Launch at Login** — optional toggle to start the app when you log in
 
 ## Requirements
 
@@ -33,6 +35,22 @@ pip install -r requirements.txt
 ```
 
 ## Run
+
+### As a standalone .app (recommended)
+
+```bash
+source .venv/bin/activate
+./build.sh
+open "dist/CC Usage Tracker.app"
+```
+
+To install permanently, copy to Applications:
+
+```bash
+cp -R "dist/CC Usage Tracker.app" /Applications/
+```
+
+### From terminal
 
 ```bash
 source .venv/bin/activate
@@ -70,6 +88,7 @@ All configuration is available from the menu bar dropdown under **Configure > Cl
 - **Auto Setup** — re-run the automatic cookie extraction and org discovery
 - **Refresh Cookie** — re-extract the cookie without full re-setup (useful if your session expired)
 - **Manual Setup** — enter org ID and session key by hand
+- **Launch at Login** — toggle in the main menu (requires the .app bundle)
 
 ## Adding providers
 
@@ -87,11 +106,13 @@ The menu bar will show multiple providers side by side: `CC 30% · OAI 45%`
 cc-usage-tracker/
 ├── app.py               # Menu bar app, config, refresh logic
 ├── views.py             # Custom AppKit views (progress bars, headers)
+├── login_item.py        # Launch at Login (LaunchAgent plist manager)
+├── setup.py             # py2app build configuration
+├── build.sh             # Build convenience script
 ├── providers/
 │   ├── __init__.py      # BaseProvider, UsageMetric, ProviderStatus
 │   └── claude.py        # Claude provider (API, cookie extraction, Keychain)
-├── requirements.txt
-└── setup.sh
+└── requirements.txt
 ```
 
 ## License
