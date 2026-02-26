@@ -12,6 +12,7 @@ from pathlib import Path
 
 import rumps
 
+from AppKit import NSAlert, NSPopUpButton
 from Foundation import NSMakeRect
 
 import login_item
@@ -154,30 +155,24 @@ class UsageTrackerApp(rumps.App):
         """Let the user choose which browser to extract cookies from."""
         browsers = list(SUPPORTED_BROWSERS.keys())
 
-        window = rumps.Window(
-            title="Choose Browser",
-            message=(
-                "Which browser are you logged into claude.ai with?\n\n"
-                f"Supported: {', '.join(browsers)}\n\n"
-                "Type the browser name below:"
-            ),
-            default_text="Brave",
-            ok="Continue",
-            cancel="Cancel",
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Choose Browser")
+        alert.setInformativeText_(
+            "Which browser are you logged into claude.ai with?"
         )
-        response = window.run()
-        if not response.clicked:
-            return None
+        alert.addButtonWithTitle_("Continue")
+        alert.addButtonWithTitle_("Cancel")
 
-        chosen = response.text.strip()
-        if chosen not in SUPPORTED_BROWSERS:
-            rumps.alert(
-                title="Unsupported Browser",
-                message=f"'{chosen}' is not supported.\n\nSupported: {', '.join(browsers)}",
-                ok="OK",
-            )
+        popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(0, 0, 200, 28), False
+        )
+        for name in browsers:
+            popup.addItemWithTitle_(name)
+        alert.setAccessoryView_(popup)
+
+        if alert.runModal() != 1000:  # NSAlertFirstButtonReturn
             return None
-        return chosen
+        return browsers[popup.indexOfSelectedItem()]
 
     def _run_auto_setup(self) -> None:
         """Extract cookie from browser and auto-discover org."""
