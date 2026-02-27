@@ -13,7 +13,7 @@ from pathlib import Path
 import rumps
 
 from AppKit import NSAlert, NSPopUpButton
-from Foundation import NSMakeRect
+from Foundation import NSMakeRect, NSProcessInfo
 
 import login_item
 from providers import BaseProvider, ProviderStatus
@@ -74,9 +74,25 @@ def indicator(pct: float) -> str:
 # ── App ───────────────────────────────────────────────────────────────────────
 
 
+def _disable_app_nap() -> None:
+    """Prevent macOS from suspending this app via App Nap.
+
+    Menu bar apps have no visible window, so macOS aggressively naps them,
+    which stops timers from firing. This is especially common on managed
+    corporate Macs with strict energy policies.
+    """
+    info = NSProcessInfo.processInfo()
+    info.setAutomaticTerminationSupportEnabled_(False)
+    # NSActivityUserInitiatedAllowingIdleSystemSleep = 0x00FFFFFF
+    info.beginActivityWithOptions_reason_(
+        0x00FFFFFF, "Menu bar app needs periodic refresh"
+    )
+
+
 class UsageTrackerApp(rumps.App):
     def __init__(self) -> None:
         super().__init__("Usage: --", quit_button=None)
+        _disable_app_nap()
 
         config = load_config()
         self.refresh_interval: int = config.get("refresh_interval", DEFAULT_REFRESH)
