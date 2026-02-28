@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import keyring
 import requests
 from pycookiecheat import BrowserType, get_cookies
@@ -128,11 +130,17 @@ class ClaudeProvider(BaseProvider):
             entry = data.get(key)
             if entry is None:
                 continue
+            resets_at = entry.get("resets_at")
+            # Extra usage resets on the 1st of next month (monthly billing cycle)
+            if key == "extra_usage" and not resets_at:
+                now = datetime.now(timezone.utc)
+                year, month = (now.year, now.month + 1) if now.month < 12 else (now.year + 1, 1)
+                resets_at = datetime(year, month, 1, tzinfo=timezone.utc).isoformat()
             metrics.append(
                 UsageMetric(
                     label=label,
                     utilization=entry.get("utilization", 0),
-                    resets_at=entry.get("resets_at"),
+                    resets_at=resets_at,
                     is_primary=is_primary,
                 )
             )
