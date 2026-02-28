@@ -30,6 +30,14 @@ OPTIONS = {
         "login_item",
         "_cffi_backend",
     ],
+    "excludes": [
+        "pytest",
+        "pygments",
+        "setuptools",
+        "distutils",
+        "_distutils_hack",
+        "pkg_resources",
+    ],
 }
 
 setup(
