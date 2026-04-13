@@ -28,8 +28,8 @@ class TestClaudeProviderInit:
         assert p.short_name == "CC"
 
     def test_custom_values(self):
-        p = ClaudeProvider(org_id="org-1", session_key="sk-1", browser="Chrome")
-        assert p.org_id == "org-1"
+        p = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001", session_key="sk-1", browser="Chrome")
+        assert p.org_id == "00000000-0000-0000-0000-000000000001"
         assert p._session_key == "sk-1"
         assert p.browser == "Chrome"
 
@@ -40,18 +40,18 @@ class TestIsConfigured:
         assert p.is_configured() is False
 
     def test_false_when_only_org(self, mock_keyring):
-        p = ClaudeProvider(org_id="org-1")
+        p = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001")
         assert p.is_configured() is False
 
     def test_true_when_both_set(self, mock_keyring):
-        p = ClaudeProvider(org_id="org-1", session_key="sk-1")
+        p = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001", session_key="sk-1")
         assert p.is_configured() is True
 
 
 class TestSessionKeyProperty:
     def test_reads_from_keyring(self, mock_keyring):
         mock_keyring[(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)] = "from-keyring"
-        p = ClaudeProvider(org_id="org-1")
+        p = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001")
         assert p.session_key == "from-keyring"
 
     def test_writes_to_keyring(self, mock_keyring):
@@ -71,17 +71,17 @@ class TestSessionKeyProperty:
 
 class TestToDict:
     def test_excludes_session_key(self):
-        p = ClaudeProvider(org_id="org-1", session_key="secret", browser="Chrome")
+        p = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001", session_key="secret", browser="Chrome")
         d = p.to_dict()
-        assert d == {"org_id": "org-1", "browser": "Chrome"}
+        assert d == {"org_id": "00000000-0000-0000-0000-000000000001", "browser": "Chrome"}
         assert "session_key" not in d
 
 
 class TestFromDict:
     def test_roundtrip(self):
-        original = ClaudeProvider(org_id="org-1", browser="Firefox")
+        original = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001", browser="Firefox")
         restored = ClaudeProvider.from_dict(original.to_dict())
-        assert restored.org_id == "org-1"
+        assert restored.org_id == "00000000-0000-0000-0000-000000000001"
         assert restored.browser == "Firefox"
         assert restored._session_key == ""  # not persisted
 
@@ -158,7 +158,7 @@ class TestExtractSessionKey:
 class TestDiscoverOrganizations:
     @patch("providers.claude.requests.get")
     def test_success(self, mock_get):
-        orgs = [{"uuid": "org-1", "name": "My Org"}]
+        orgs = [{"uuid": "00000000-0000-0000-0000-000000000001", "name": "My Org"}]
         mock_get.return_value = MagicMock(status_code=200, json=lambda: orgs)
         mock_get.return_value.raise_for_status = MagicMock()
         result = discover_organizations("sk-test")
@@ -178,7 +178,7 @@ class TestDiscoverOrganizations:
 
 class TestFetch:
     def _make_provider(self, mock_keyring):
-        p = ClaudeProvider(org_id="org-1", session_key="sk-1")
+        p = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001", session_key="sk-1")
         return p
 
     @patch("providers.claude.requests.get")
@@ -234,13 +234,13 @@ class TestAutoSetup:
     @patch("providers.claude.extract_session_key")
     def test_success(self, mock_extract, mock_discover, mock_keyring):
         mock_extract.return_value = "sk-extracted"
-        mock_discover.return_value = [{"uuid": "org-1", "name": "My Org"}]
+        mock_discover.return_value = [{"uuid": "00000000-0000-0000-0000-000000000001", "name": "My Org"}]
 
         p = ClaudeProvider(browser="Brave")
         result = p.auto_setup()
 
         assert "My Org" in result
-        assert p.org_id == "org-1"
+        assert p.org_id == "00000000-0000-0000-0000-000000000001"
         assert p._session_key == "sk-extracted"
 
     @patch("providers.claude.extract_session_key")
