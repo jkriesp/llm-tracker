@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
 import keyring
@@ -112,6 +113,10 @@ class ClaudeProvider(BaseProvider):
         return bool(self.org_id and self.session_key)
 
     def fetch(self) -> list[UsageMetric]:
+        try:
+            uuid.UUID(self.org_id)
+        except ValueError:
+            raise ValueError(f"Invalid org_id format: {self.org_id!r}")
         url = f"{API_BASE}/api/organizations/{self.org_id}/usage"
         resp = requests.get(
             url,
@@ -181,6 +186,7 @@ class ClaudeProvider(BaseProvider):
                 self.session_key = key  # saves to Keychain
                 return True
         except Exception:
+            # pycookiecheat raises various exception types on failure
             pass
         return False
 

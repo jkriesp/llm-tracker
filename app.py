@@ -7,6 +7,7 @@ Displays API usage stats from Claude (and other providers) in the macOS menu bar
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,7 +36,9 @@ def load_config() -> dict:
 
 def save_config(config: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(CONFIG_DIR, 0o700)
     CONFIG_FILE.write_text(json.dumps(config, indent=2))
+    os.chmod(CONFIG_FILE, 0o600)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -107,6 +110,8 @@ class UsageTrackerApp(rumps.App):
             provider_cfg = config.get(key, {})
             if provider_cfg:
                 provider.apply_config(provider_cfg)
+
+        self._cookie_refreshed_this_cycle = False
 
         # ── Build menu ────────────────────────────────────────────────────
         self.provider_sections: dict[str, list[rumps.MenuItem]] = {}
@@ -323,6 +328,7 @@ class UsageTrackerApp(rumps.App):
     # ── Data refresh ──────────────────────────────────────────────────────
 
     def _on_tick(self, _: rumps.Timer) -> None:
+        self._cookie_refreshed_this_cycle = False
         self._refresh_all()
 
     def _refresh_all(self) -> None:
@@ -334,12 +340,14 @@ class UsageTrackerApp(rumps.App):
 
             status = self._fetch_provider(provider)
 
-            # Auto-refresh cookie on 401
+            # Auto-refresh cookie on 401 (once per timer cycle)
             if (
                 status.error
                 and "401" in status.error
                 and isinstance(provider, ClaudeProvider)
+                and not self._cookie_refreshed_this_cycle
             ):
+                self._cookie_refreshed_this_cycle = True
                 if provider.refresh_cookie():
                     # Retry with new cookie
                     config = load_config()
