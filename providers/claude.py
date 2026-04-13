@@ -139,7 +139,7 @@ class ClaudeProvider(BaseProvider):
             metrics.append(
                 UsageMetric(
                     label=label,
-                    utilization=entry.get("utilization", 0),
+                    utilization=entry.get("utilization") or 0,
                     resets_at=resets_at,
                     is_primary=is_primary,
                 )
