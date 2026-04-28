@@ -26,6 +26,16 @@ API_BASE = "https://claude.ai"
 KEYCHAIN_SERVICE = "cc-usage-tracker"
 KEYCHAIN_ACCOUNT = "claude-session-key"
 
+SESSION_COOKIE_NAME = "sessionKey"
+
+# A complete current Chrome-on-macOS UA. Cloudflare binds cf_clearance to the
+# fingerprint that solved the challenge — sending a truncated UA invalidates it.
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36"
+)
+
 # Browser types we can extract cookies from (Chromium-based + Firefox)
 SUPPORTED_BROWSERS = {
     "Brave": BrowserType.BRAVE,
@@ -46,21 +56,43 @@ def extract_session_key(browser_name: str = "Brave") -> str | None:
         raise ValueError(f"Unsupported browser: {browser_name}")
 
     cookies = get_cookies(API_BASE, browser=browser_type)
-    return cookies.get("sessionKey")
+    return cookies.get(SESSION_COOKIE_NAME)
 
 
-def discover_organizations(session_key: str) -> list[dict]:
+def _build_cookie_jar(session_key: str, browser_name: str | None = None) -> dict:
+    """Cookies for a claude.ai API call.
+
+    claude.ai is fronted by Cloudflare bot mitigation. Requests without
+    cf_clearance / __cf_bm can receive 403 with cf-mitigated=challenge under
+    stricter Cloudflare modes. We forward the full browser jar when available,
+    with the Keychain-cached session key overriding any stale browser value as
+    our authoritative auth.
+    """
+    jar: dict = {}
+    browser_type = SUPPORTED_BROWSERS.get(browser_name) if browser_name else None
+    if browser_type is not None:
+        try:
+            jar = dict(get_cookies(API_BASE, browser=browser_type))
+        except Exception:
+            jar = {}
+    if session_key:
+        jar[SESSION_COOKIE_NAME] = session_key
+    return jar
+
+
+def discover_organizations(session_key: str, browser: str | None = None) -> list[dict]:
     """Fetch the list of organizations the user belongs to.
 
     Returns list of dicts with at least 'uuid' and 'name' keys.
+
+    `allow_redirects=False` prevents the dict-sourced cookies (with no domain
+    binding) from being forwarded if claude.ai ever 3xx'd to a third-party host.
     """
     resp = requests.get(
         f"{API_BASE}/api/organizations",
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        },
-        cookies={"sessionKey": session_key},
+        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+        cookies=_build_cookie_jar(session_key, browser),
+        allow_redirects=False,
         timeout=15,
     )
     resp.raise_for_status()
@@ -88,6 +120,7 @@ def _delete_session_key() -> None:
 class ClaudeProvider(BaseProvider):
     name = "Claude"
     short_name = "CC"
+    supports_browser_auth = True
 
     def __init__(self, org_id: str = "", session_key: str = "", browser: str = "Brave"):
         self.org_id = org_id
@@ -120,11 +153,9 @@ class ClaudeProvider(BaseProvider):
         url = f"{API_BASE}/api/organizations/{self.org_id}/usage"
         resp = requests.get(
             url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
-            cookies={"sessionKey": self.session_key},
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+            cookies=_build_cookie_jar(self.session_key, self.browser),
+            allow_redirects=False,
             timeout=15,
         )
         resp.raise_for_status()
@@ -167,7 +198,7 @@ class ClaudeProvider(BaseProvider):
         self.session_key = key  # saves to Keychain via property setter
 
         # Step 2: Discover organization
-        orgs = discover_organizations(self.session_key)
+        orgs = discover_organizations(self.session_key, self.browser)
         if not orgs:
             raise RuntimeError("No organizations found for this account.")
 

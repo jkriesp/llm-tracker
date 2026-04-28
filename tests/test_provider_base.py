@@ -49,6 +49,7 @@ class TestBaseProvider:
     def test_class_attrs(self):
         assert BaseProvider.name == "Unknown"
         assert BaseProvider.short_name == "??"
+        assert BaseProvider.supports_browser_auth is False
 
     def test_methods_raise(self):
         p = BaseProvider()
@@ -66,3 +67,9 @@ class TestBaseProvider:
             p.to_dict()
         with pytest.raises(NotImplementedError):
             BaseProvider.from_dict({})
+        with pytest.raises(NotImplementedError):
+            p.auto_setup()
+
+    def test_refresh_cookie_default_returns_false(self):
+        p = BaseProvider()
+        assert p.refresh_cookie() is False

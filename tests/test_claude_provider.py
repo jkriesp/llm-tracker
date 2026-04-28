@@ -26,6 +26,7 @@ class TestClaudeProviderInit:
         assert p.browser == "Brave"
         assert p.name == "Claude"
         assert p.short_name == "CC"
+        assert p.supports_browser_auth is True
 
     def test_custom_values(self):
         p = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001", session_key="sk-1", browser="Chrome")
@@ -172,6 +173,36 @@ class TestDiscoverOrganizations:
         with pytest.raises(HTTPError):
             discover_organizations("bad-key")
 
+    @patch("providers.claude.requests.get")
+    def test_disables_redirect_following(self, mock_get):
+        """dict-sourced cookies have no domain binding — disable redirects."""
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: [])
+        mock_get.return_value.raise_for_status = MagicMock()
+        discover_organizations("sk-test")
+        _, kwargs = mock_get.call_args
+        assert kwargs.get("allow_redirects") is False
+
+    @patch("providers.claude.get_cookies")
+    @patch("providers.claude.requests.get")
+    def test_forwards_cloudflare_cookies_from_browser(self, mock_get, mock_get_cookies):
+        """claude.ai is fronted by Cloudflare bot mitigation. Forward cf cookies
+        when available so Anthropic's WAF doesn't intermittently 403 us."""
+        mock_get_cookies.return_value = {
+            "sessionKey": "stale-browser-value",
+            "cf_clearance": "cf-clearance-token",
+            "__cf_bm": "cf-bm-token",
+        }
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: [])
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        discover_organizations("sk-keychain", browser="Brave")
+
+        _, kwargs = mock_get.call_args
+        sent = kwargs["cookies"]
+        assert sent["cf_clearance"] == "cf-clearance-token"
+        assert sent["__cf_bm"] == "cf-bm-token"
+        assert sent["sessionKey"] == "sk-keychain"
+
 
 # ── fetch ─────────────────────────────────────────────────────────────────────
 
@@ -224,6 +255,68 @@ class TestFetch:
 
         with pytest.raises(HTTPError):
             p.fetch()
+
+    @patch("providers.claude.get_cookies")
+    @patch("providers.claude.requests.get")
+    def test_forwards_cloudflare_cookies_from_browser(self, mock_get, mock_get_cookies, mock_keyring):
+        """claude.ai is fronted by Cloudflare bot mitigation. Forward cf cookies
+        on the usage call so the request survives WAF challenges."""
+        p = self._make_provider(mock_keyring)
+        mock_get_cookies.return_value = {
+            "sessionKey": "stale-browser-value",
+            "cf_clearance": "cf-clearance-token",
+            "__cf_bm": "cf-bm-token",
+        }
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {})
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        p.fetch()
+
+        _, kwargs = mock_get.call_args
+        sent = kwargs["cookies"]
+        assert sent["cf_clearance"] == "cf-clearance-token"
+        assert sent["__cf_bm"] == "cf-bm-token"
+        assert sent["sessionKey"] == "sk-1"
+
+    @patch("providers.claude.get_cookies", side_effect=Exception("browser locked"))
+    @patch("providers.claude.requests.get")
+    def test_falls_back_to_session_only_when_browser_unavailable(self, mock_get, _mock_cookies, mock_keyring):
+        """If pycookiecheat fails, fall back to bare session cookie."""
+        p = self._make_provider(mock_keyring)
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {})
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        p.fetch()
+
+        _, kwargs = mock_get.call_args
+        assert kwargs["cookies"] == {"sessionKey": "sk-1"}
+
+    @patch("providers.claude.requests.get")
+    def test_uses_realistic_chrome_user_agent(self, mock_get, mock_keyring):
+        """The truncated UA can invalidate cf_clearance under Cloudflare."""
+        p = self._make_provider(mock_keyring)
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {})
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        p.fetch()
+
+        _, kwargs = mock_get.call_args
+        ua = kwargs["headers"]["User-Agent"]
+        assert "Chrome/" in ua
+        assert "Safari/" in ua
+
+    @patch("providers.claude.requests.get")
+    def test_disables_redirect_following(self, mock_get, mock_keyring):
+        """dict-sourced cookies have no domain binding — they would be sent on
+        any cross-origin redirect, leaking the sessionKey."""
+        p = self._make_provider(mock_keyring)
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {})
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        p.fetch()
+
+        _, kwargs = mock_get.call_args
+        assert kwargs.get("allow_redirects") is False
 
 
 # ── auto_setup ────────────────────────────────────────────────────────────────

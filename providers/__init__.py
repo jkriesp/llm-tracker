@@ -36,6 +36,7 @@ class BaseProvider:
 
     name: str = "Unknown"
     short_name: str = "??"  # 2-3 char abbreviation for menu bar
+    supports_browser_auth: bool = False  # True if Auto Setup / Refresh Cookie apply
 
     def is_configured(self) -> bool:
         raise NotImplementedError
@@ -63,3 +64,17 @@ class BaseProvider:
     def from_dict(cls, data: dict) -> BaseProvider:
         """Deserialize provider config."""
         raise NotImplementedError
+
+    def auto_setup(self) -> str:
+        """Cookie + auto-discover. Override in browser-auth providers.
+
+        Returns a human-readable status message. Raises on failure.
+        """
+        raise NotImplementedError
+
+    def refresh_cookie(self) -> bool:
+        """Re-extract the cookie from the browser. Returns True on success.
+
+        Default returns False so non-browser providers can still be polled.
+        """
+        return False

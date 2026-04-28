@@ -19,6 +19,7 @@ from Foundation import NSMakeRect, NSProcessInfo
 import login_item
 from providers import BaseProvider, ProviderStatus
 from providers.claude import ClaudeProvider, SUPPORTED_BROWSERS
+from providers.codex import CodexProvider
 from views import ErrorView, HeaderView, MetricView, MENU_WIDTH, METRIC_HEIGHT
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -103,6 +104,7 @@ class UsageTrackerApp(rumps.App):
         # ── Providers ─────────────────────────────────────────────────────
         self.providers: list[tuple[BaseProvider, str]] = [
             (ClaudeProvider(), "claude"),
+            (CodexProvider(), "codex"),
         ]
 
         # Hydrate providers from saved config
@@ -195,49 +197,53 @@ class UsageTrackerApp(rumps.App):
             return None
         return browsers[popup.indexOfSelectedItem()]
 
-    def _run_auto_setup(self) -> None:
-        """Extract cookie from browser and auto-discover org."""
+    def _run_auto_setup(self, provider: BaseProvider | None = None) -> None:
+        """Extract cookie from browser and run the provider's auto setup.
+
+        If `provider` is None, defaults to the first browser-auth provider \u2014
+        used by the first-launch onboarding flow.
+        """
+        if provider is None:
+            for p, _k in self.providers:
+                if p.supports_browser_auth:
+                    provider = p
+                    break
+            if provider is None:
+                return
+
         browser = self._pick_browser()
         if not browser:
             return
 
-        # Find the Claude provider
-        claude_provider: ClaudeProvider | None = None
-        provider_key: str = ""
-        for p, k in self.providers:
-            if isinstance(p, ClaudeProvider):
-                claude_provider = p
-                provider_key = k
-                break
-
-        if not claude_provider:
+        provider_key = next(
+            (k for p, k in self.providers if p is provider), ""
+        )
+        if not provider_key:
             return
 
-        claude_provider.browser = browser
+        provider.browser = browser
         self.title = "Usage ..."
 
         try:
-            status_msg = claude_provider.auto_setup()
+            status_msg = provider.auto_setup()
         except Exception as e:
             rumps.alert(
                 title="Setup Failed",
                 message=(
                     f"{e}\n\n"
                     "You can try again from the menu:\n"
-                    "Configure \u2192 Claude \u2192 Auto Setup"
+                    f"Configure \u2192 {provider.name} \u2192 Auto Setup"
                 ),
                 ok="OK",
             )
             self.title = "Usage \u2699\ufe0f"
             return
 
-        # Save config
         config = load_config()
-        config[provider_key] = claude_provider.to_dict()
+        config[provider_key] = provider.to_dict()
         config["refresh_interval"] = self.refresh_interval
         save_config(config)
 
-        # Start polling
         if not self.timer.is_alive:
             self.timer.start()
 
@@ -306,10 +312,10 @@ class UsageTrackerApp(rumps.App):
         configure_menu = rumps.MenuItem("Configure")
         for provider, _key in self.providers:
             provider_menu = rumps.MenuItem(provider.name)
-            if isinstance(provider, ClaudeProvider):
+            if provider.supports_browser_auth:
                 provider_menu["Auto Setup"] = rumps.MenuItem(
                     "Auto Setup",
-                    callback=lambda _, p=provider: self._run_auto_setup(),
+                    callback=lambda _, p=provider: self._run_auto_setup(p),
                 )
                 provider_menu["Refresh Cookie"] = rumps.MenuItem(
                     "Refresh Cookie",
@@ -344,7 +350,7 @@ class UsageTrackerApp(rumps.App):
             if (
                 status.error
                 and "401" in status.error
-                and isinstance(provider, ClaudeProvider)
+                and provider.supports_browser_auth
                 and not self._cookie_refreshed_this_cycle
             ):
                 self._cookie_refreshed_this_cycle = True
