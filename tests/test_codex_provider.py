@@ -106,3 +106,55 @@ class TestApplyConfig:
         p = CodexProvider(session_key="keep")
         p.apply_config({"session_key": ""})
         assert p._session_key == "keep"
+
+
+# ── extract_session_key ───────────────────────────────────────────────────────
+
+
+class TestExtractSessionKey:
+    @patch("providers.codex.get_cookies")
+    def test_returns_session_key(self, mock_get_cookies):
+        mock_get_cookies.return_value = {"__Secure-next-auth.session-token": "sk-abc"}
+        result = extract_session_key("Brave")
+        assert result == "sk-abc"
+
+    @patch("providers.codex.get_cookies")
+    def test_returns_none_when_missing(self, mock_get_cookies):
+        mock_get_cookies.return_value = {"some-other-cookie": "x"}
+        result = extract_session_key("Chrome")
+        assert result is None
+
+    def test_raises_for_unsupported_browser(self):
+        with pytest.raises(ValueError, match="Unsupported browser"):
+            extract_session_key("Safari")
+
+
+# ── _unix_to_iso ──────────────────────────────────────────────────────────────
+
+
+class TestUnixToIso:
+    def test_returns_none_for_none(self):
+        from providers.codex import _unix_to_iso
+        assert _unix_to_iso(None) is None
+
+    def test_converts_epoch_seconds_to_iso(self):
+        from providers.codex import _unix_to_iso
+        # epoch 1777680000 → 2026-05-02T00:00:00+00:00 (verified)
+        result = _unix_to_iso(1777680000)
+        assert result == "2026-05-02T00:00:00+00:00"
+        from datetime import datetime
+        parsed = datetime.fromisoformat(result)
+        assert parsed.year == 2026
+        assert parsed.month == 5
+        assert parsed.day == 2
+
+    def test_round_trip_with_time_remaining(self):
+        """The output must be parseable by app.time_remaining()."""
+        from providers.codex import _unix_to_iso
+        from app import time_remaining
+        from datetime import datetime, timezone, timedelta
+
+        future = datetime.now(timezone.utc) + timedelta(hours=2)
+        iso = _unix_to_iso(int(future.timestamp()))
+        result = time_remaining(iso)
+        assert "h" in result or "m" in result
