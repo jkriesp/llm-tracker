@@ -464,3 +464,18 @@ class TestRefreshCookie:
         mock_extract.side_effect = Exception("Keychain denied")
         p = CodexProvider(browser="Chrome")
         assert p.refresh_cookie() is False
+
+
+# ── get_config_fields ─────────────────────────────────────────────────────────
+
+
+class TestGetConfigFields:
+    def test_returns_session_key_field_only(self):
+        p = CodexProvider()
+        fields = p.get_config_fields()
+        assert len(fields) == 1
+        f = fields[0]
+        assert f["key"] == "session_key"
+        assert f["secure"] is True
+        assert "label" in f
+        assert "message" in f

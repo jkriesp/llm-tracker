@@ -208,7 +208,22 @@ class CodexProvider(BaseProvider):
         return False
 
     def get_config_fields(self) -> list[dict]:
-        raise NotImplementedError  # implemented in Task 6
+        return [
+            {
+                "key": "session_key",
+                "label": "Session Cookie",
+                "message": (
+                    "Enter your chatgpt.com session cookie value\n\n"
+                    "1. Go to chatgpt.com in your browser\n"
+                    "2. Open DevTools (⌘⌥I)\n"
+                    "3. Application → Cookies → chatgpt.com\n"
+                    f"4. Copy the '{SESSION_COOKIE_NAME}' value\n\n"
+                    "This will be stored in your macOS Keychain."
+                ),
+                "secure": True,
+                "default": "",
+            },
+        ]
 
     def apply_config(self, values: dict) -> None:
         if "session_key" in values and values["session_key"]:
