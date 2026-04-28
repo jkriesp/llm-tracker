@@ -65,6 +65,30 @@ def _unix_to_iso(epoch_seconds: int | float | None) -> str | None:
     return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
 
 
+def _get_access_token(session_key: str) -> str:
+    """Exchange the NextAuth session cookie for a short-lived Bearer token.
+
+    chatgpt.com's /backend-api/* endpoints reject cookie-only requests; the
+    session cookie alone returns 401. This helper performs the standard
+    NextAuth session exchange.
+    """
+    resp = requests.get(
+        SESSION_ENDPOINT,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        },
+        cookies={SESSION_COOKIE_NAME: session_key},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    token = data.get("accessToken")
+    if not token:
+        raise RuntimeError("NextAuth session response missing accessToken")
+    return token
+
+
 class CodexProvider(BaseProvider):
     name = "Codex"
     short_name = "CX"
@@ -92,7 +116,71 @@ class CodexProvider(BaseProvider):
         return bool(self.session_key)
 
     def fetch(self) -> list[UsageMetric]:
-        raise NotImplementedError  # implemented in Task 4
+        if not self.session_key:
+            raise RuntimeError("CodexProvider not configured: session key missing")
+
+        access_token = _get_access_token(self.session_key)
+
+        resp = requests.get(
+            USAGE_ENDPOINT,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Authorization": f"Bearer {access_token}",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        metrics: list[UsageMetric] = []
+
+        rate_limit = data.get("rate_limit") or {}
+        primary = rate_limit.get("primary_window")
+        if primary:
+            metrics.append(UsageMetric(
+                label="5-hour",
+                utilization=primary.get("used_percent") or 0,
+                resets_at=_unix_to_iso(primary.get("reset_at")),
+                is_primary=True,
+            ))
+        secondary = rate_limit.get("secondary_window")
+        if secondary:
+            metrics.append(UsageMetric(
+                label="7-day",
+                utilization=secondary.get("used_percent") or 0,
+                resets_at=_unix_to_iso(secondary.get("reset_at")),
+            ))
+
+        for entry in data.get("additional_rate_limits") or []:
+            limit_name = entry.get("limit_name", "Unknown")
+            sub_rl = entry.get("rate_limit") or {}
+            sub_secondary = sub_rl.get("secondary_window")
+            if sub_secondary:
+                metrics.append(UsageMetric(
+                    label=f"7-day {limit_name}",
+                    utilization=sub_secondary.get("used_percent") or 0,
+                    resets_at=_unix_to_iso(sub_secondary.get("reset_at")),
+                ))
+
+        code_review = data.get("code_review_rate_limit")
+        if code_review:
+            cr_primary = code_review.get("primary_window")
+            if cr_primary:
+                metrics.append(UsageMetric(
+                    label="Code review 5-hour",
+                    utilization=cr_primary.get("used_percent") or 0,
+                    resets_at=_unix_to_iso(cr_primary.get("reset_at")),
+                ))
+            cr_secondary = code_review.get("secondary_window")
+            if cr_secondary:
+                metrics.append(UsageMetric(
+                    label="Code review 7-day",
+                    utilization=cr_secondary.get("used_percent") or 0,
+                    resets_at=_unix_to_iso(cr_secondary.get("reset_at")),
+                ))
+
+        return metrics
 
     def auto_setup(self) -> str:
         raise NotImplementedError  # implemented in Task 5
