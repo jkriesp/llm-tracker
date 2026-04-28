@@ -417,3 +417,50 @@ class TestFetchTwoStepFlow:
         assert side_effect.session_cookies == {"__Secure-next-auth.session-token": "sk-1"}
         assert side_effect.wham_auth == "Bearer bearer-from-session"
         assert len(metrics) == 3
+
+
+# ── auto_setup ────────────────────────────────────────────────────────────────
+
+
+class TestAutoSetup:
+    @patch("providers.codex.extract_session_key")
+    def test_success(self, mock_extract, mock_keyring):
+        mock_extract.return_value = "sk-extracted"
+        p = CodexProvider(browser="Brave")
+
+        result = p.auto_setup()
+
+        assert "Codex" in result or "Connected" in result
+        assert p._session_key == "sk-extracted"
+        assert mock_keyring[(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)] == "sk-extracted"
+
+    @patch("providers.codex.extract_session_key")
+    def test_no_cookie_raises(self, mock_extract, mock_keyring):
+        mock_extract.return_value = None
+        p = CodexProvider(browser="Brave")
+        with pytest.raises(RuntimeError, match="Could not find"):
+            p.auto_setup()
+
+
+# ── refresh_cookie ────────────────────────────────────────────────────────────
+
+
+class TestRefreshCookie:
+    @patch("providers.codex.extract_session_key")
+    def test_success(self, mock_extract, mock_keyring):
+        mock_extract.return_value = "fresh-key"
+        p = CodexProvider(browser="Chrome")
+        assert p.refresh_cookie() is True
+        assert p._session_key == "fresh-key"
+
+    @patch("providers.codex.extract_session_key")
+    def test_returns_false_on_none(self, mock_extract, mock_keyring):
+        mock_extract.return_value = None
+        p = CodexProvider(browser="Chrome")
+        assert p.refresh_cookie() is False
+
+    @patch("providers.codex.extract_session_key")
+    def test_returns_false_on_exception(self, mock_extract, mock_keyring):
+        mock_extract.side_effect = Exception("Keychain denied")
+        p = CodexProvider(browser="Chrome")
+        assert p.refresh_cookie() is False

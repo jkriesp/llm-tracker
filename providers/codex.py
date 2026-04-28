@@ -183,10 +183,29 @@ class CodexProvider(BaseProvider):
         return metrics
 
     def auto_setup(self) -> str:
-        raise NotImplementedError  # implemented in Task 5
+        """Extract the chatgpt.com session cookie and save it.
+
+        Unlike Claude there is no org-discovery step — Codex rate limits are
+        user-level. Returns a status message; raises on failure.
+        """
+        key = extract_session_key(self.browser)
+        if not key:
+            raise RuntimeError(
+                f"Could not find a session cookie for chatgpt.com in {self.browser}.\n"
+                "Make sure you are logged into chatgpt.com."
+            )
+        self.session_key = key  # saves to Keychain via property setter
+        return "Connected to Codex"
 
     def refresh_cookie(self) -> bool:
-        return False  # implemented in Task 5
+        try:
+            key = extract_session_key(self.browser)
+            if key:
+                self.session_key = key
+                return True
+        except Exception:
+            pass
+        return False
 
     def get_config_fields(self) -> list[dict]:
         raise NotImplementedError  # implemented in Task 6
