@@ -26,6 +26,7 @@ class TestClaudeProviderInit:
         assert p.browser == "Brave"
         assert p.name == "Claude"
         assert p.short_name == "CC"
+        assert p.supports_browser_auth is True
 
     def test_custom_values(self):
         p = ClaudeProvider(org_id="00000000-0000-0000-0000-000000000001", session_key="sk-1", browser="Chrome")

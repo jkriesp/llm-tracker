@@ -88,6 +88,7 @@ def _delete_session_key() -> None:
 class ClaudeProvider(BaseProvider):
     name = "Claude"
     short_name = "CC"
+    supports_browser_auth = True
 
     def __init__(self, org_id: str = "", session_key: str = "", browser: str = "Brave"):
         self.org_id = org_id
