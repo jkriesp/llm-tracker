@@ -84,3 +84,22 @@ class TestMenuTitleFormatting:
         title = " \u00b7 ".join(title_parts)
         assert "\U0001f534" in title
         assert "95%" in title
+
+
+class TestProviderRegistration:
+    """Smoke test: app.py registers both Claude and Codex with distinct keys."""
+
+    def test_both_providers_registered_in_app_source(self):
+        """app.py's self.providers list contains both providers."""
+        from pathlib import Path
+        src = Path(__file__).parent.parent.joinpath("app.py").read_text()
+        assert "ClaudeProvider()" in src
+        assert "CodexProvider()" in src
+        assert '"claude"' in src
+        assert '"codex"' in src
+
+    def test_both_providers_advertise_browser_auth(self):
+        from providers.claude import ClaudeProvider
+        from providers.codex import CodexProvider
+        assert ClaudeProvider.supports_browser_auth is True
+        assert CodexProvider.supports_browser_auth is True
