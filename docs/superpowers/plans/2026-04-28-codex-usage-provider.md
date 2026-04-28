@@ -4,7 +4,7 @@
 
 **Goal:** Add a `CodexProvider` that reports OpenAI Codex (chatgpt.com) usage in the existing macOS menu bar app, alongside `ClaudeProvider`.
 
-**Architecture:** Verbatim mirror of the existing `ClaudeProvider` pattern. New module `providers/codex.py` polls `https://chatgpt.com/backend-api/wham/usage` using a session cookie extracted from the user's browser and stored in macOS Keychain. Maps the response to `UsageMetric` objects (5-hour primary window, 7-day secondary window, plus per-model `additional_rate_limits` and optional `code_review_rate_limit`). A small refactor adds `supports_browser_auth: bool` to `BaseProvider` so `app.py` can wire the Configure submenu and 401 recovery without `isinstance` proliferation.
+**Architecture:** Mirrors the existing `ClaudeProvider` pattern with one extra step: chatgpt.com's `/backend-api/*` rejects cookie-only requests, so each fetch first exchanges the NextAuth session cookie for a short-lived Bearer token via `GET https://chatgpt.com/api/auth/session`, then calls `GET https://chatgpt.com/backend-api/wham/usage` with `Authorization: Bearer <token>`. Maps the response to `UsageMetric` objects (5-hour primary window, 7-day secondary window, plus per-model `additional_rate_limits` and optional `code_review_rate_limit`). A small refactor adds `supports_browser_auth: bool` to `BaseProvider` so `app.py` can wire the Configure submenu and 401 recovery without `isinstance` proliferation.
 
 **Tech Stack:** Python 3, `requests`, `pycookiecheat` (cookie extraction), `keyring` (macOS Keychain), `rumps` (menu bar UI), `pytest` (tests). All deps already pinned in `requirements.txt`. macOS-only at runtime; tests are platform-independent (mocks in `tests/conftest.py`).
 
@@ -31,78 +31,19 @@
 
 ---
 
-## Task 0: Preflight — verify the chatgpt.com session cookie name
+## Task 0: Preflight — verify the chatgpt.com auth flow ✅ COMPLETED 2026-04-28
 
-**Why first:** The whole flow hinges on a specific cookie. The spec assumes `__Secure-next-auth.session-token` based on NextAuth's production naming convention. A 30-second smoke check now saves debug time later.
+**Findings (recorded for downstream tasks):**
 
-**Files:**
-- No code changes. This task records a fact for use in later tasks.
+- **Session cookie name:** `__Secure-next-auth.session-token` ✓ (verified against Brave)
+- **`/backend-api/wham/usage` cannot be called with the cookie directly** — returns `401 {"detail":"Unauthorized"}`
+- **Required flow:** two-step NextAuth exchange:
+  1. `GET https://chatgpt.com/api/auth/session` with `Cookie: __Secure-next-auth.session-token=<value>` → JSON response with top-level keys including `accessToken`, `expires`, `user`, `account`
+  2. `GET https://chatgpt.com/backend-api/wham/usage` with `Authorization: Bearer <accessToken>` (no cookie required on this call) → usage JSON
+- **`used_percent` scale:** integer 0–100 (verified — primary_window.used_percent is `1` of type `int`)
+- **No additional headers required** beyond `Accept` and `User-Agent` on both endpoints
 
-- [ ] **Step 1: Run pycookiecheat against chatgpt.com**
-
-Activate the venv and run a one-liner that lists cookie names (not values).
-
-```bash
-source /Users/daudir/Projects/cc-usage-tracker/.venv/bin/activate
-python -c "
-from pycookiecheat import BrowserType, get_cookies
-cookies = get_cookies('https://chatgpt.com', browser=BrowserType.BRAVE)
-for name in sorted(cookies.keys()):
-    print(name)
-"
-```
-
-Expected: a list of cookie names. The session cookie should be `__Secure-next-auth.session-token` (or, on rare configurations, `next-auth.session-token` without the `__Secure-` prefix). Note any other plausible candidates.
-
-If macOS prompts for Keychain access, allow it.
-
-If the user uses a browser other than Brave, swap `BrowserType.BRAVE` for `CHROME`, `CHROMIUM`, or `FIREFOX` until cookies appear.
-
-- [ ] **Step 2: Record the cookie name**
-
-The exact name found in step 1 is used as `SESSION_COOKIE_NAME` in `providers/codex.py` (Task 2). Default assumption: `__Secure-next-auth.session-token`. If different, substitute the actual name in Task 2's code blocks.
-
-- [ ] **Step 3: Test the endpoint manually**
-
-Confirm the endpoint accepts that cookie alone (no extra headers needed beyond `Accept` and `User-Agent`).
-
-```bash
-python -c "
-from pycookiecheat import BrowserType, get_cookies
-import requests
-cookies = get_cookies('https://chatgpt.com', browser=BrowserType.BRAVE)
-key = cookies.get('__Secure-next-auth.session-token')
-print('cookie present:', bool(key))
-resp = requests.get(
-    'https://chatgpt.com/backend-api/wham/usage',
-    headers={
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-    },
-    cookies={'__Secure-next-auth.session-token': key} if key else {},
-    timeout=15,
-)
-print('status:', resp.status_code)
-print('keys:', list(resp.json().keys()) if resp.status_code == 200 else resp.text[:200])
-"
-```
-
-Expected output (success):
-```
-cookie present: True
-status: 200
-keys: ['user_id', 'account_id', 'email', 'plan_type', 'rate_limit', ...]
-```
-
-(Substitute `BrowserType.BRAVE` for `CHROME`/`CHROMIUM`/`FIREFOX` if needed, matching what step 1 found.)
-
-If status is 401: the cookie name is wrong, the cookie is expired, or additional headers are required. Adjust `SESSION_COOKIE_NAME` and/or add the missing headers, then re-run. Stop here and resolve before continuing the plan.
-
-If status is 403 with a CSRF / device-id complaint: capture the `OAI-Device-Id` and any other custom headers from the chatgpt.com browser Network tab and add them to the constants in Task 2.
-
-- [ ] **Step 4: No commit**
-
-This task produces no file changes; it just unblocks later tasks.
+These findings drive the implementation in Task 2 (constants) and Task 4 (fetch). No commit; this task produced no code, only confirmed facts.
 
 ---
 
@@ -433,6 +374,7 @@ from pycookiecheat import BrowserType, get_cookies
 from providers import BaseProvider, UsageMetric
 
 API_BASE = "https://chatgpt.com"
+SESSION_ENDPOINT = f"{API_BASE}/api/auth/session"
 USAGE_ENDPOINT = f"{API_BASE}/backend-api/wham/usage"
 
 # Cookie name verified in Task 0 preflight. Production NextAuth deployments
@@ -654,17 +596,65 @@ git commit -m "Add tests for Codex extract_session_key and _unix_to_iso helpers"
 
 ---
 
-## Task 4: Implement `fetch()` — map the `wham/usage` response
+## Task 4: Implement `_get_access_token()` and `fetch()`
+
+The chatgpt.com backend rejects cookie-only requests to `/backend-api/*`. Each fetch must first exchange the NextAuth session cookie for a short-lived Bearer token via `GET /api/auth/session`, then call the usage endpoint with `Authorization: Bearer <token>`. We extract the exchange into a `_get_access_token(session_key)` helper so the two-step flow is testable in isolation.
 
 **Files:**
-- Modify: `providers/codex.py` (replace the `fetch` stub)
-- Modify: `tests/test_codex_provider.py` (append `TestFetch`)
+- Modify: `providers/codex.py` (add `_get_access_token` helper, replace the `fetch` stub)
+- Modify: `tests/test_codex_provider.py` (append `TestGetAccessToken` and `TestFetch`)
 
-- [ ] **Step 1: Write the failing tests for the canonical happy path**
+- [ ] **Step 1: Write the failing tests for `_get_access_token`**
 
 Append to `tests/test_codex_provider.py`:
 
 ```python
+# ── _get_access_token ─────────────────────────────────────────────────────────
+
+
+class TestGetAccessToken:
+    @patch("providers.codex.requests.get")
+    def test_returns_token_from_session_response(self, mock_get):
+        from providers.codex import _get_access_token, SESSION_COOKIE_NAME
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "user": {"email": "test@example.com"},
+                "expires": "2026-04-28T13:00:00.000Z",
+                "accessToken": "bearer-xyz",
+            },
+        )
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        token = _get_access_token("sk-1")
+
+        assert token == "bearer-xyz"
+        # Verify the cookie was sent on the call
+        _, kwargs = mock_get.call_args
+        assert kwargs["cookies"] == {SESSION_COOKIE_NAME: "sk-1"}
+
+    @patch("providers.codex.requests.get")
+    def test_raises_when_token_missing(self, mock_get):
+        from providers.codex import _get_access_token
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: {"user": {}})
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        with pytest.raises(RuntimeError, match="accessToken"):
+            _get_access_token("sk-1")
+
+    @patch("providers.codex.requests.get")
+    def test_propagates_401(self, mock_get):
+        from providers.codex import _get_access_token
+        from requests.exceptions import HTTPError
+
+        resp = MagicMock(status_code=401)
+        resp.raise_for_status.side_effect = HTTPError("401 Unauthorized")
+        mock_get.return_value = resp
+
+        with pytest.raises(HTTPError):
+            _get_access_token("expired-cookie")
+
+
 # ── fetch ─────────────────────────────────────────────────────────────────────
 
 
@@ -721,11 +711,16 @@ WHAM_USAGE_FIXTURE = {
 
 
 class TestFetch:
+    """Tests for CodexProvider.fetch() — `_get_access_token` is patched out
+    so we focus on the wham/usage parsing. The end-to-end two-step flow is
+    covered separately by `TestFetchTwoStepFlow` below."""
+
     def _make_provider(self, mock_keyring):
         return CodexProvider(session_key="sk-1")
 
+    @patch("providers.codex._get_access_token", return_value="bearer-xyz")
     @patch("providers.codex.requests.get")
-    def test_parses_canonical_response(self, mock_get, mock_keyring):
+    def test_parses_canonical_response(self, mock_get, _mock_token, mock_keyring):
         p = self._make_provider(mock_keyring)
         mock_get.return_value = MagicMock(status_code=200, json=lambda: WHAM_USAGE_FIXTURE)
         mock_get.return_value.raise_for_status = MagicMock()
@@ -750,8 +745,9 @@ class TestFetch:
         assert metrics[2].utilization == 0
         assert metrics[2].is_primary is False
 
+    @patch("providers.codex._get_access_token", return_value="bearer-xyz")
     @patch("providers.codex.requests.get")
-    def test_sends_session_cookie(self, mock_get, mock_keyring):
+    def test_sends_bearer_authorization(self, mock_get, _mock_token, mock_keyring):
         p = self._make_provider(mock_keyring)
         mock_get.return_value = MagicMock(status_code=200, json=lambda: WHAM_USAGE_FIXTURE)
         mock_get.return_value.raise_for_status = MagicMock()
@@ -759,11 +755,13 @@ class TestFetch:
         p.fetch()
 
         _, kwargs = mock_get.call_args
-        assert "__Secure-next-auth.session-token" in kwargs["cookies"]
-        assert kwargs["cookies"]["__Secure-next-auth.session-token"] == "sk-1"
+        assert kwargs["headers"]["Authorization"] == "Bearer bearer-xyz"
+        # No cookies on the wham/usage call — only the bearer token authorises it
+        assert "cookies" not in kwargs or not kwargs["cookies"]
 
+    @patch("providers.codex._get_access_token", return_value="bearer-xyz")
     @patch("providers.codex.requests.get")
-    def test_handles_empty_additional_rate_limits(self, mock_get, mock_keyring):
+    def test_handles_empty_additional_rate_limits(self, mock_get, _mock_token, mock_keyring):
         p = self._make_provider(mock_keyring)
         data = {**WHAM_USAGE_FIXTURE, "additional_rate_limits": []}
         mock_get.return_value = MagicMock(status_code=200, json=lambda: data)
@@ -772,8 +770,9 @@ class TestFetch:
         metrics = p.fetch()
         assert len(metrics) == 2  # 5h + 7d only
 
+    @patch("providers.codex._get_access_token", return_value="bearer-xyz")
     @patch("providers.codex.requests.get")
-    def test_handles_null_additional_rate_limits(self, mock_get, mock_keyring):
+    def test_handles_null_additional_rate_limits(self, mock_get, _mock_token, mock_keyring):
         p = self._make_provider(mock_keyring)
         data = {**WHAM_USAGE_FIXTURE, "additional_rate_limits": None}
         mock_get.return_value = MagicMock(status_code=200, json=lambda: data)
@@ -782,8 +781,9 @@ class TestFetch:
         metrics = p.fetch()
         assert len(metrics) == 2
 
+    @patch("providers.codex._get_access_token", return_value="bearer-xyz")
     @patch("providers.codex.requests.get")
-    def test_handles_null_used_percent(self, mock_get, mock_keyring):
+    def test_handles_null_used_percent(self, mock_get, _mock_token, mock_keyring):
         """Mirror the historical Claude bug — None utilization must coerce to 0."""
         p = self._make_provider(mock_keyring)
         data = {
@@ -801,8 +801,9 @@ class TestFetch:
         assert metrics[0].utilization == 0
         assert metrics[1].utilization == 0
 
+    @patch("providers.codex._get_access_token", return_value="bearer-xyz")
     @patch("providers.codex.requests.get")
-    def test_surfaces_code_review_rate_limit_when_present(self, mock_get, mock_keyring):
+    def test_surfaces_code_review_rate_limit_when_present(self, mock_get, _mock_token, mock_keyring):
         p = self._make_provider(mock_keyring)
         data = {
             **WHAM_USAGE_FIXTURE,
@@ -820,8 +821,9 @@ class TestFetch:
         assert "Code review 5-hour" in labels
         assert "Code review 7-day" in labels
 
+    @patch("providers.codex._get_access_token", return_value="bearer-xyz")
     @patch("providers.codex.requests.get")
-    def test_401_raises(self, mock_get, mock_keyring):
+    def test_wham_401_raises(self, mock_get, _mock_token, mock_keyring):
         from requests.exceptions import HTTPError
 
         p = self._make_provider(mock_keyring)
@@ -831,32 +833,110 @@ class TestFetch:
 
         with pytest.raises(HTTPError):
             p.fetch()
+
+    def test_session_401_propagates(self, mock_keyring):
+        """If the session exchange fails (cookie expired), fetch surfaces it."""
+        from requests.exceptions import HTTPError
+        p = self._make_provider(mock_keyring)
+        with patch("providers.codex._get_access_token", side_effect=HTTPError("401")):
+            with pytest.raises(HTTPError):
+                p.fetch()
+
+
+class TestFetchTwoStepFlow:
+    """End-to-end test that both endpoints are called in the right order
+    with the right credentials, no patching of `_get_access_token`."""
+
+    @patch("providers.codex.requests.get")
+    def test_full_flow_session_then_wham(self, mock_get, mock_keyring):
+        from requests.exceptions import HTTPError
+
+        def side_effect(url, **kwargs):
+            if "api/auth/session" in url:
+                resp = MagicMock(status_code=200)
+                resp.json.return_value = {"accessToken": "bearer-from-session"}
+                resp.raise_for_status = MagicMock()
+                # Capture the cookie sent to session endpoint
+                side_effect.session_cookies = kwargs.get("cookies")
+                return resp
+            if "wham/usage" in url:
+                resp = MagicMock(status_code=200)
+                resp.json.return_value = WHAM_USAGE_FIXTURE
+                resp.raise_for_status = MagicMock()
+                # Capture the auth header sent to wham
+                side_effect.wham_auth = kwargs["headers"].get("Authorization")
+                return resp
+            raise ValueError(f"Unexpected URL: {url}")
+        side_effect.session_cookies = None
+        side_effect.wham_auth = None
+        mock_get.side_effect = side_effect
+
+        p = CodexProvider(session_key="sk-1")
+        metrics = p.fetch()
+
+        # Both endpoints were called
+        assert mock_get.call_count == 2
+        # Session endpoint got the cookie
+        assert side_effect.session_cookies == {"__Secure-next-auth.session-token": "sk-1"}
+        # wham/usage got the bearer token from the session response
+        assert side_effect.wham_auth == "Bearer bearer-from-session"
+        # Response was parsed
+        assert len(metrics) == 3
 ```
 
 - [ ] **Step 2: Run the failing tests**
 
 ```bash
-pytest tests/test_codex_provider.py::TestFetch -v
+pytest tests/test_codex_provider.py::TestGetAccessToken tests/test_codex_provider.py::TestFetch tests/test_codex_provider.py::TestFetchTwoStepFlow -v
 ```
 
-Expected: all `TestFetch` tests fail with `NotImplementedError` from the stub.
+Expected: `TestGetAccessToken` tests fail with `ImportError` (helper doesn't exist yet). `TestFetch` and `TestFetchTwoStepFlow` tests fail with `NotImplementedError` from the stub or `AttributeError` on the patched helper.
 
-- [ ] **Step 3: Implement `fetch()`**
+- [ ] **Step 3: Implement `_get_access_token()` and `fetch()`**
 
-Edit `providers/codex.py`. Replace the `fetch` method on `CodexProvider` with:
+Edit `providers/codex.py`. Add the helper just above the `CodexProvider` class:
+
+```python
+def _get_access_token(session_key: str) -> str:
+    """Exchange the NextAuth session cookie for a short-lived Bearer token.
+
+    chatgpt.com's /backend-api/* endpoints require Bearer auth; the session
+    cookie alone returns 401. This helper performs the standard NextAuth
+    session exchange.
+    """
+    resp = requests.get(
+        SESSION_ENDPOINT,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        },
+        cookies={SESSION_COOKIE_NAME: session_key},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    token = data.get("accessToken")
+    if not token:
+        raise RuntimeError("NextAuth session response missing accessToken")
+    return token
+```
+
+Then replace the `fetch` method on `CodexProvider` with:
 
 ```python
     def fetch(self) -> list[UsageMetric]:
         if not self.session_key:
             raise RuntimeError("CodexProvider not configured: session key missing")
 
+        access_token = _get_access_token(self.session_key)
+
         resp = requests.get(
             USAGE_ENDPOINT,
             headers={
                 "Accept": "application/json",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Authorization": f"Bearer {access_token}",
             },
-            cookies={SESSION_COOKIE_NAME: self.session_key},
             timeout=15,
         )
         resp.raise_for_status()
@@ -915,7 +995,7 @@ Edit `providers/codex.py`. Replace the `fetch` method on `CodexProvider` with:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-pytest tests/test_codex_provider.py::TestFetch -v
+pytest tests/test_codex_provider.py::TestGetAccessToken tests/test_codex_provider.py::TestFetch tests/test_codex_provider.py::TestFetchTwoStepFlow -v
 ```
 
 Expected: all PASS.
@@ -932,7 +1012,7 @@ Expected: all green.
 
 ```bash
 git add providers/codex.py tests/test_codex_provider.py
-git commit -m "Implement CodexProvider.fetch with wham/usage response mapping"
+git commit -m "Implement CodexProvider.fetch with NextAuth bearer-token exchange"
 ```
 
 ---

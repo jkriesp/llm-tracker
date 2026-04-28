@@ -87,9 +87,14 @@ Notes:
 
 ## Auth & secrets
 
-- **Cookie name:** `__Secure-next-auth.session-token`. The exact name will be verified during implementation by inspecting `pycookiecheat`'s output in a smoke test. If different, the constant in `providers/codex.py` is the only change.
+- **Cookie name:** `__Secure-next-auth.session-token` (verified 2026-04-28 against Brave; chatgpt.com is a production NextAuth deployment)
+- **Two-step exchange:** chatgpt.com's `/backend-api/*` endpoints reject cookie-only requests (verified: returns 401 with just the session cookie). Each fetch must:
+  1. `GET https://chatgpt.com/api/auth/session` with `Cookie: __Secure-next-auth.session-token=…` → response includes `accessToken`
+  2. `GET https://chatgpt.com/backend-api/wham/usage` with `Authorization: Bearer <accessToken>` → usage data
+  The Bearer token is short-lived; we re-exchange on every poll rather than caching, since fetches happen at most once every 300s and the extra request is cheap.
 - **Keychain service:** `cc-usage-tracker` (same as Claude — a single-app namespace)
 - **Keychain account:** `codex-session-key` (distinct from `claude-session-key`)
+- Only the upstream session cookie is persisted (in Keychain). The Bearer token is ephemeral; never stored.
 - `to_dict()` exposes only `browser`. Cookie value never written to `~/.config/cc-usage-tracker/config.json`
 
 ## Configure UX
@@ -164,7 +169,7 @@ All AppKit/Keychain dependencies are already mocked in `tests/conftest.py`.
 | Cookie name (`__Secure-next-auth.session-token`) differs from assumption | Verify during implementation; constant is in one place |
 | `used_percent` turns out to be 0–1 instead of 0–100 | First implementation step is a smoke run against the real endpoint to confirm |
 | `reset_at` is in milliseconds, not seconds | Same smoke run confirms |
-| `wham/usage` requires an additional header (CSRF, beta cohort) | Cookie alone may not be sufficient; if so, replicate browser headers (User-Agent, Accept, possibly `OAI-Device-Id`) by inspecting the Network tab again |
+| `wham/usage` requires an additional header (CSRF, beta cohort) | Resolved 2026-04-28: requires Bearer token from `/api/auth/session` exchange, not just the cookie. See "Two-step exchange" above. |
 | `code_review_rate_limit` shape is unknown until non-null | Treat as identical to `rate_limit` based on naming; defensive parsing |
 | Cookie expires more aggressively than Claude's | Same Refresh Cookie path as Claude; revisit `~/.codex/auth.json` token approach if it becomes painful |
 
