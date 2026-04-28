@@ -181,7 +181,7 @@ class TestGetAccessToken:
 
         assert token == "bearer-xyz"
         _, kwargs = mock_get.call_args
-        assert kwargs["cookies"] == {SESSION_COOKIE_NAME: "sk-1"}
+        assert kwargs["cookies"][SESSION_COOKIE_NAME] == "sk-1"
 
     @patch("providers.codex.requests.get")
     def test_raises_when_token_missing(self, mock_get):
@@ -203,6 +203,86 @@ class TestGetAccessToken:
 
         with pytest.raises(HTTPError):
             _get_access_token("expired-cookie")
+
+    @patch("providers.codex.get_cookies")
+    @patch("providers.codex.requests.get")
+    def test_forwards_cloudflare_cookies_from_browser(self, mock_get, mock_get_cookies):
+        """chatgpt.com is behind Cloudflare bot mitigation. Without cf_clearance
+        and __cf_bm in the request, the session exchange returns 403."""
+        from providers.codex import _get_access_token, SESSION_COOKIE_NAME
+
+        mock_get_cookies.return_value = {
+            SESSION_COOKIE_NAME: "stale-browser-value",
+            "cf_clearance": "cf-clearance-token",
+            "__cf_bm": "cf-bm-token",
+            "_cfuvid": "cfuvid-token",
+        }
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: {"accessToken": "bearer"}
+        )
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        _get_access_token("sk-keychain", browser="Brave")
+
+        _, kwargs = mock_get.call_args
+        sent = kwargs["cookies"]
+        assert sent["cf_clearance"] == "cf-clearance-token"
+        assert sent["__cf_bm"] == "cf-bm-token"
+        assert sent["_cfuvid"] == "cfuvid-token"
+        # The Keychain-cached session cookie wins over the browser-supplied one
+        assert sent[SESSION_COOKIE_NAME] == "sk-keychain"
+
+    @patch("providers.codex.get_cookies", side_effect=Exception("browser locked"))
+    @patch("providers.codex.requests.get")
+    def test_falls_back_to_session_only_when_browser_unavailable(self, mock_get, _mock_cookies):
+        """If pycookiecheat fails (browser closed, keychain denied, etc.),
+        fall back to sending the session cookie alone — no regression vs. today."""
+        from providers.codex import _get_access_token, SESSION_COOKIE_NAME
+
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: {"accessToken": "bearer"}
+        )
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        _get_access_token("sk-1", browser="Brave")
+
+        _, kwargs = mock_get.call_args
+        assert kwargs["cookies"] == {SESSION_COOKIE_NAME: "sk-1"}
+
+    @patch("providers.codex.requests.get")
+    def test_uses_realistic_chrome_user_agent(self, mock_get):
+        """Cloudflare's cf_clearance is fingerprint-bound — a UA missing the
+        Chrome/Safari version suffix can invalidate the clearance cookie."""
+        from providers.codex import _get_access_token
+
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: {"accessToken": "bearer"}
+        )
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        _get_access_token("sk-1")
+
+        _, kwargs = mock_get.call_args
+        ua = kwargs["headers"]["User-Agent"]
+        assert "Chrome/" in ua
+        assert "Safari/" in ua
+
+    @patch("providers.codex.requests.get")
+    def test_disables_redirect_following(self, mock_get):
+        """dict-sourced cookies have no domain binding — they would be sent on
+        any cross-origin redirect. Disable redirect following to prevent
+        session cookie exfiltration if chatgpt.com ever 3xx'd to a third party."""
+        from providers.codex import _get_access_token
+
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: {"accessToken": "bearer"}
+        )
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        _get_access_token("sk-1")
+
+        _, kwargs = mock_get.call_args
+        assert kwargs.get("allow_redirects") is False
 
 
 # ── fetch ─────────────────────────────────────────────────────────────────────
@@ -302,6 +382,20 @@ class TestFetch:
         _, kwargs = mock_get.call_args
         assert kwargs["headers"]["Authorization"] == "Bearer bearer-xyz"
         assert "cookies" not in kwargs or not kwargs["cookies"]
+
+    @patch("providers.codex._get_access_token", return_value="bearer-xyz")
+    @patch("providers.codex.requests.get")
+    def test_wham_disables_redirect_following(self, mock_get, _mock_token, mock_keyring):
+        """Bearer must not follow redirects — even Authorization-stripped, a
+        redirect away from chatgpt.com is unexpected and worth surfacing."""
+        p = self._make_provider(mock_keyring)
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: WHAM_USAGE_FIXTURE)
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        p.fetch()
+
+        _, kwargs = mock_get.call_args
+        assert kwargs.get("allow_redirects") is False
 
     @patch("providers.codex._get_access_token", return_value="bearer-xyz")
     @patch("providers.codex.requests.get")

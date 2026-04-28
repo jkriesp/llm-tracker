@@ -21,6 +21,14 @@ SESSION_COOKIE_NAME = "__Secure-next-auth.session-token"
 KEYCHAIN_SERVICE = "cc-usage-tracker"
 KEYCHAIN_ACCOUNT = "codex-session-key"
 
+# A complete current Chrome-on-macOS UA. Cloudflare binds cf_clearance to the
+# fingerprint that solved the challenge — sending a truncated UA invalidates it.
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36"
+)
+
 SUPPORTED_BROWSERS = {
     "Brave": BrowserType.BRAVE,
     "Chrome": BrowserType.CHROME,
@@ -65,20 +73,42 @@ def _unix_to_iso(epoch_seconds: int | float | None) -> str | None:
     return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
 
 
-def _get_access_token(session_key: str) -> str:
+def _build_cookie_jar(session_key: str, browser_name: str | None = None) -> dict:
+    """Cookies for a chatgpt.com API call.
+
+    chatgpt.com is fronted by Cloudflare bot mitigation. Requests without
+    cf_clearance / __cf_bm receive 403 with cf-mitigated=challenge. We forward
+    the full browser jar when available, with the Keychain-cached session key
+    overriding any stale value from the browser as our authoritative auth.
+    """
+    jar: dict = {}
+    browser_type = SUPPORTED_BROWSERS.get(browser_name) if browser_name else None
+    if browser_type is not None:
+        try:
+            jar = dict(get_cookies(API_BASE, browser=browser_type))
+        except Exception:
+            jar = {}
+    if session_key:
+        jar[SESSION_COOKIE_NAME] = session_key
+    return jar
+
+
+def _get_access_token(session_key: str, browser: str | None = None) -> str:
     """Exchange the NextAuth session cookie for a short-lived Bearer token.
 
     chatgpt.com's /backend-api/* endpoints reject cookie-only requests; the
     session cookie alone returns 401. This helper performs the standard
     NextAuth session exchange.
+
+    `allow_redirects=False` is critical: dict-sourced cookies have no domain
+    binding and would be sent on any cross-origin 3xx, leaking the session
+    cookie + cf_clearance to whatever host chatgpt.com redirected to.
     """
     resp = requests.get(
         SESSION_ENDPOINT,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        },
-        cookies={SESSION_COOKIE_NAME: session_key},
+        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+        cookies=_build_cookie_jar(session_key, browser),
+        allow_redirects=False,
         timeout=15,
     )
     resp.raise_for_status()
@@ -119,15 +149,16 @@ class CodexProvider(BaseProvider):
         if not self.session_key:
             raise RuntimeError("CodexProvider not configured: session key missing")
 
-        access_token = _get_access_token(self.session_key)
+        access_token = _get_access_token(self.session_key, self.browser)
 
         resp = requests.get(
             USAGE_ENDPOINT,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "User-Agent": USER_AGENT,
                 "Authorization": f"Bearer {access_token}",
             },
+            allow_redirects=False,
             timeout=15,
         )
         resp.raise_for_status()
