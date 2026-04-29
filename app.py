@@ -174,14 +174,15 @@ class UsageTrackerApp(rumps.App):
         else:
             self._run_manual_setup()
 
-    def _pick_browser(self) -> str | None:
+    def _pick_browser(self, provider: BaseProvider | None = None) -> str | None:
         """Let the user choose which browser to extract cookies from."""
         browsers = list(SUPPORTED_BROWSERS.keys())
 
         alert = NSAlert.alloc().init()
         alert.setMessageText_("Choose Browser")
+        service = provider.name if provider is not None else "claude.ai"
         alert.setInformativeText_(
-            "Which browser are you logged into claude.ai with?"
+            f"Which browser are you logged into {service} with?"
         )
         alert.addButtonWithTitle_("Continue")
         alert.addButtonWithTitle_("Cancel")
@@ -211,7 +212,7 @@ class UsageTrackerApp(rumps.App):
             if provider is None:
                 return
 
-        browser = self._pick_browser()
+        browser = self._pick_browser(provider)
         if not browser:
             return
 
@@ -453,6 +454,12 @@ class UsageTrackerApp(rumps.App):
             rumps.notification("Usage Tracker", "Cookie Refresh Failed", "Could not read cookie. Try Auto Setup.")
 
     def _on_configure_manual(self, provider: BaseProvider) -> None:
+        if provider.supports_browser_auth:
+            browser = self._pick_browser(provider)
+            if browser is None:
+                return
+            provider.browser = browser
+
         fields = provider.get_config_fields()
         values: dict[str, str] = {}
 

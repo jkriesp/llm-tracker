@@ -124,9 +124,76 @@ class TestExtractSessionKey:
         result = extract_session_key("Chrome")
         assert result is None
 
+    @patch("providers.codex.get_cookies")
+    def test_reassembles_chunked_cookie(self, mock_get_cookies):
+        """ChatGPT's session JWT exceeds NextAuth's 3933-byte chunk size and
+        is split across `.0`, `.1`, ... cookies — must be rejoined in order."""
+        mock_get_cookies.return_value = {
+            "__Secure-next-auth.session-token.1": "PART-B",
+            "__Secure-next-auth.session-token.0": "PART-A",
+        }
+        result = extract_session_key("Chrome")
+        assert result == "PART-APART-B"
+
+    @patch("providers.codex.get_cookies")
+    def test_unsplit_takes_precedence_over_chunks(self, mock_get_cookies):
+        mock_get_cookies.return_value = {
+            "__Secure-next-auth.session-token": "WHOLE",
+            "__Secure-next-auth.session-token.0": "STALE",
+        }
+        result = extract_session_key("Chrome")
+        assert result == "WHOLE"
+
     def test_raises_for_unsupported_browser(self):
         with pytest.raises(ValueError, match="Unsupported browser"):
             extract_session_key("Safari")
+
+
+# ── _build_cookie_jar ─────────────────────────────────────────────────────────
+
+
+class TestBuildCookieJar:
+    @patch("providers.codex.get_cookies")
+    def test_chunks_long_session_key(self, mock_get_cookies):
+        from providers.codex import _build_cookie_jar, NEXTAUTH_CHUNK_SIZE
+
+        mock_get_cookies.return_value = {}
+        long_key = "x" * (NEXTAUTH_CHUNK_SIZE + 100)
+
+        jar = _build_cookie_jar(long_key, browser_name="Chrome")
+
+        assert jar["__Secure-next-auth.session-token.0"] == "x" * NEXTAUTH_CHUNK_SIZE
+        assert jar["__Secure-next-auth.session-token.1"] == "x" * 100
+        assert "__Secure-next-auth.session-token" not in jar
+
+    @patch("providers.codex.get_cookies")
+    def test_drops_stale_browser_side_session_cookies(self, mock_get_cookies):
+        from providers.codex import _build_cookie_jar
+
+        mock_get_cookies.return_value = {
+            "__Secure-next-auth.session-token": "stale-unsplit",
+            "__Secure-next-auth.session-token.0": "stale-chunk-0",
+            "__Secure-next-auth.session-token.1": "stale-chunk-1",
+            "cf_clearance": "keep-me",
+        }
+
+        jar = _build_cookie_jar("fresh-key", browser_name="Chrome")
+
+        # Stale unsplit + chunked entries are gone, replaced by fresh chunks.
+        assert "__Secure-next-auth.session-token" not in jar
+        assert jar["__Secure-next-auth.session-token.0"] == "fresh-key"
+        assert "__Secure-next-auth.session-token.1" not in jar
+        # Non-session cookies survive.
+        assert jar["cf_clearance"] == "keep-me"
+
+    @patch("providers.codex.get_cookies")
+    def test_no_browser_returns_chunked_session_only(self, mock_get_cookies):
+        from providers.codex import _build_cookie_jar
+
+        jar = _build_cookie_jar("sk-1", browser_name=None)
+
+        assert jar == {"__Secure-next-auth.session-token.0": "sk-1"}
+        mock_get_cookies.assert_not_called()
 
 
 # ── _unix_to_iso ──────────────────────────────────────────────────────────────
@@ -181,7 +248,9 @@ class TestGetAccessToken:
 
         assert token == "bearer-xyz"
         _, kwargs = mock_get.call_args
-        assert kwargs["cookies"][SESSION_COOKIE_NAME] == "sk-1"
+        # Session cookie is emitted as the chunked `.0` form (NextAuth
+        # rejects the unsplit name when its server config expects chunks).
+        assert kwargs["cookies"][f"{SESSION_COOKIE_NAME}.0"] == "sk-1"
 
     @patch("providers.codex.requests.get")
     def test_raises_when_token_missing(self, mock_get):
@@ -229,8 +298,10 @@ class TestGetAccessToken:
         assert sent["cf_clearance"] == "cf-clearance-token"
         assert sent["__cf_bm"] == "cf-bm-token"
         assert sent["_cfuvid"] == "cfuvid-token"
-        # The Keychain-cached session cookie wins over the browser-supplied one
-        assert sent[SESSION_COOKIE_NAME] == "sk-keychain"
+        # The Keychain-cached session cookie wins, emitted as a `.0` chunk.
+        # The stale unsplit browser-side value is dropped before re-emission.
+        assert sent[f"{SESSION_COOKIE_NAME}.0"] == "sk-keychain"
+        assert SESSION_COOKIE_NAME not in sent
 
     @patch("providers.codex.get_cookies", side_effect=Exception("browser locked"))
     @patch("providers.codex.requests.get")
@@ -247,7 +318,7 @@ class TestGetAccessToken:
         _get_access_token("sk-1", browser="Brave")
 
         _, kwargs = mock_get.call_args
-        assert kwargs["cookies"] == {SESSION_COOKIE_NAME: "sk-1"}
+        assert kwargs["cookies"] == {f"{SESSION_COOKIE_NAME}.0": "sk-1"}
 
     @patch("providers.codex.requests.get")
     def test_uses_realistic_chrome_user_agent(self, mock_get):
@@ -508,7 +579,9 @@ class TestFetchTwoStepFlow:
         metrics = p.fetch()
 
         assert mock_get.call_count == 2
-        assert side_effect.session_cookies == {"__Secure-next-auth.session-token": "sk-1"}
+        assert side_effect.session_cookies == {
+            "__Secure-next-auth.session-token.0": "sk-1"
+        }
         assert side_effect.wham_auth == "Bearer bearer-from-session"
         assert len(metrics) == 3
 

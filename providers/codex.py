@@ -18,6 +18,11 @@ USAGE_ENDPOINT = f"{API_BASE}/backend-api/wham/usage"
 # deployment, hence the __Secure- prefix.
 SESSION_COOKIE_NAME = "__Secure-next-auth.session-token"
 
+# NextAuth v4 splits session JWTs across multiple cookies when the value
+# exceeds ALLOWED_COOKIE_SIZE (4096) - ESTIMATED_EMPTY_COOKIE_SIZE (163).
+# chatgpt.com's session JWT is large enough to always be chunked.
+NEXTAUTH_CHUNK_SIZE = 3933
+
 KEYCHAIN_SERVICE = "cc-usage-tracker"
 KEYCHAIN_ACCOUNT = "codex-session-key"
 
@@ -37,6 +42,28 @@ SUPPORTED_BROWSERS = {
 }
 
 
+def _reassemble_session_cookie(cookies: dict) -> str | None:
+    """Return the NextAuth session value, reassembling chunks if present.
+
+    Prefers the unsplit name when it exists (older deployments / small JWTs).
+    Otherwise concatenates `${SESSION_COOKIE_NAME}.0`, `.1`, ... in numeric
+    order — the same scheme NextAuth's server-side `SessionStore` uses to
+    rejoin chunks.
+    """
+    unsplit = cookies.get(SESSION_COOKIE_NAME)
+    if unsplit:
+        return unsplit
+    chunks: list[str] = []
+    i = 0
+    while True:
+        value = cookies.get(f"{SESSION_COOKIE_NAME}.{i}")
+        if value is None:
+            break
+        chunks.append(value)
+        i += 1
+    return "".join(chunks) if chunks else None
+
+
 def extract_session_key(browser_name: str = "Brave") -> str | None:
     """Extract the chatgpt.com session cookie from the given browser."""
     browser_type = SUPPORTED_BROWSERS.get(browser_name)
@@ -44,7 +71,7 @@ def extract_session_key(browser_name: str = "Brave") -> str | None:
         raise ValueError(f"Unsupported browser: {browser_name}")
 
     cookies = get_cookies(API_BASE, browser=browser_type)
-    return cookies.get(SESSION_COOKIE_NAME)
+    return _reassemble_session_cookie(cookies)
 
 
 def _save_session_key(value: str) -> None:
@@ -77,9 +104,11 @@ def _build_cookie_jar(session_key: str, browser_name: str | None = None) -> dict
     """Cookies for a chatgpt.com API call.
 
     chatgpt.com is fronted by Cloudflare bot mitigation. Requests without
-    cf_clearance / __cf_bm receive 403 with cf-mitigated=challenge. We forward
-    the full browser jar when available, with the Keychain-cached session key
-    overriding any stale value from the browser as our authoritative auth.
+    cf_clearance / __cf_bm receive 403 with cf-mitigated=challenge, so we
+    forward the full browser jar when available. The Keychain-cached session
+    key wins over any stale browser-side session cookies — those are dropped
+    before we re-emit the cached value as `.0`, `.1`, ... chunks at NextAuth's
+    expected boundary so the server-side `SessionStore` can reassemble it.
     """
     jar: dict = {}
     browser_type = SUPPORTED_BROWSERS.get(browser_name) if browser_name else None
@@ -88,8 +117,19 @@ def _build_cookie_jar(session_key: str, browser_name: str | None = None) -> dict
             jar = dict(get_cookies(API_BASE, browser=browser_type))
         except Exception:
             jar = {}
+
     if session_key:
-        jar[SESSION_COOKIE_NAME] = session_key
+        for name in [
+            n for n in jar
+            if n == SESSION_COOKIE_NAME or n.startswith(f"{SESSION_COOKIE_NAME}.")
+        ]:
+            del jar[name]
+        chunks = [
+            session_key[i : i + NEXTAUTH_CHUNK_SIZE]
+            for i in range(0, len(session_key), NEXTAUTH_CHUNK_SIZE)
+        ] or [session_key]
+        for idx, chunk in enumerate(chunks):
+            jar[f"{SESSION_COOKIE_NAME}.{idx}"] = chunk
     return jar
 
 
@@ -248,7 +288,11 @@ class CodexProvider(BaseProvider):
                     "1. Go to chatgpt.com in your browser\n"
                     "2. Open DevTools (⌘⌥I)\n"
                     "3. Application → Cookies → chatgpt.com\n"
-                    f"4. Copy the '{SESSION_COOKIE_NAME}' value\n\n"
+                    f"4. Copy the '{SESSION_COOKIE_NAME}' value.\n"
+                    "   If it's split into '.0', '.1', ... parts, paste\n"
+                    "   them concatenated in order with no separator.\n\n"
+                    "Tip: Auto Setup is easier — it reads the cookie\n"
+                    "directly from your browser.\n\n"
                     "This will be stored in your macOS Keychain."
                 ),
                 "secure": True,
