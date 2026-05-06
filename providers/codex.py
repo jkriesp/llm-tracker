@@ -242,8 +242,7 @@ class CodexProvider(BaseProvider):
                 response = getattr(e, "response", None)
                 if response is not None and response.status_code == 401:
                     raise RuntimeError(
-                        "Codex auth.json access token is invalid or expired. "
-                        "Run `codex login` to refresh."
+                        "Codex auth.json token expired. Run `codex login` to refresh."
                     ) from e
                 raise
 
