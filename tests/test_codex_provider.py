@@ -15,6 +15,22 @@ from providers.codex import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_authjson_by_default(monkeypatch, tmp_path):
+    """Default: tests don't see a real ~/.codex/auth.json on the dev box.
+
+    Redirects the module's default path to a non-existent file under tmp_path.
+    The real loader still runs — so Task 1's TestLoadAuthjsonToken (which
+    passes its own paths) is unaffected. Tests that need to exercise the
+    auth.json path through fetch()/is_configured() should patch
+    `providers.codex._load_authjson_token` explicitly.
+    """
+    monkeypatch.setattr(
+        "providers.codex.DEFAULT_AUTHJSON_PATH",
+        tmp_path / "no-such-authjson.json",
+    )
+
+
 # ── CodexProvider init & properties ───────────────────────────────────────────
 
 
@@ -706,6 +722,130 @@ class TestLoadAuthjsonToken:
         ))
         monkeypatch.setattr(mod, "DEFAULT_AUTHJSON_PATH", fake_file)
         assert mod._load_authjson_token() == "default-jwt"
+
+
+# ── fetch with auth.json ──────────────────────────────────────────────────────
+
+
+class TestFetchAuthjsonPath:
+    """fetch() prefers ~/.codex/auth.json when readable."""
+
+    @patch("providers.codex._load_authjson_token", return_value="jwt-from-authjson")
+    @patch("providers.codex.requests.get")
+    def test_uses_authjson_token_when_available(
+        self, mock_get, _mock_load, mock_keyring,
+    ):
+        p = CodexProvider()  # no session key set
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: WHAM_USAGE_FIXTURE,
+        )
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        metrics = p.fetch()
+
+        # Only one HTTP call — the wham endpoint, with the auth.json bearer.
+        assert mock_get.call_count == 1
+        url = mock_get.call_args[0][0]
+        assert "wham/usage" in url
+        _, kwargs = mock_get.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer jwt-from-authjson"
+        assert len(metrics) == 3
+
+    @patch("providers.codex._load_authjson_token", return_value="jwt-from-authjson")
+    @patch("providers.codex.requests.get")
+    def test_authjson_skips_session_endpoint(
+        self, mock_get, _mock_load, mock_keyring,
+    ):
+        """When auth.json is used, the /api/auth/session exchange is skipped."""
+        p = CodexProvider()
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: WHAM_USAGE_FIXTURE,
+        )
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        p.fetch()
+
+        for call in mock_get.call_args_list:
+            assert "api/auth/session" not in call[0][0]
+
+    @patch("providers.codex._load_authjson_token", return_value="expired-jwt")
+    @patch("providers.codex.requests.get")
+    def test_authjson_401_raises_codex_login_hint(
+        self, mock_get, _mock_load, mock_keyring,
+    ):
+        from requests.exceptions import HTTPError
+
+        p = CodexProvider()
+        resp = MagicMock(status_code=401)
+        err = HTTPError("401 Unauthorized")
+        err.response = resp
+        resp.raise_for_status.side_effect = err
+        mock_get.return_value = resp
+
+        with pytest.raises(RuntimeError, match=r"codex login"):
+            p.fetch()
+
+    @patch("providers.codex._load_authjson_token", return_value="jwt")
+    @patch("providers.codex.requests.get")
+    def test_authjson_500_propagates(
+        self, mock_get, _mock_load, mock_keyring,
+    ):
+        """Non-401 errors bubble up — they aren't cured by re-running codex login."""
+        from requests.exceptions import HTTPError
+
+        p = CodexProvider()
+        resp = MagicMock(status_code=500)
+        err = HTTPError("500 Server Error")
+        err.response = resp
+        resp.raise_for_status.side_effect = err
+        mock_get.return_value = resp
+
+        with pytest.raises(HTTPError):
+            p.fetch()
+
+    @patch("providers.codex._load_authjson_token", return_value=None)
+    @patch("providers.codex._get_access_token", return_value="bearer-from-cookie")
+    @patch("providers.codex.requests.get")
+    def test_falls_back_to_cookie_path_when_authjson_absent(
+        self, mock_get, _mock_token, _mock_load, mock_keyring,
+    ):
+        p = CodexProvider(session_key="sk-1")
+        mock_get.return_value = MagicMock(
+            status_code=200, json=lambda: WHAM_USAGE_FIXTURE,
+        )
+        mock_get.return_value.raise_for_status = MagicMock()
+
+        metrics = p.fetch()
+
+        _, kwargs = mock_get.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer bearer-from-cookie"
+        assert len(metrics) == 3
+
+    def test_no_authjson_no_cookie_raises_not_configured(self, mock_keyring):
+        # Autouse fixture already stubs auth.json to None.
+        p = CodexProvider()  # no session key
+        with pytest.raises(RuntimeError, match="not configured"):
+            p.fetch()
+
+
+# ── is_configured with auth.json ──────────────────────────────────────────────
+
+
+class TestIsConfiguredAuthjson:
+    @patch("providers.codex._load_authjson_token", return_value="jwt-abc")
+    def test_true_when_authjson_provides_token(self, _mock_load, mock_keyring):
+        p = CodexProvider()  # no session key
+        assert p.is_configured() is True
+
+    def test_false_when_neither_authjson_nor_session_key(self, mock_keyring):
+        # Autouse fixture stubs auth.json to None.
+        p = CodexProvider()
+        assert p.is_configured() is False
+
+    def test_true_when_only_session_key(self, mock_keyring):
+        # Autouse fixture stubs auth.json to None.
+        p = CodexProvider(session_key="sk-1")
+        assert p.is_configured() is True
 
 
 # ── get_config_fields ─────────────────────────────────────────────────────────

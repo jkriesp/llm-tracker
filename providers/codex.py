@@ -220,14 +220,37 @@ class CodexProvider(BaseProvider):
             _delete_session_key()
 
     def is_configured(self) -> bool:
+        """True if either the official CLI's auth.json yields a token or we have
+        a session key cached. auth.json takes precedence at fetch time."""
+        if _load_authjson_token() is not None:
+            return True
         return bool(self.session_key)
 
     def fetch(self) -> list[UsageMetric]:
+        """Fetch usage metrics, preferring ~/.codex/auth.json over browser cookies.
+
+        When the official `codex` CLI is logged in, auth.json yields a fresh
+        JWT and the cookie path is skipped entirely. On 401 from the auth.json
+        path, we surface a `codex login` hint rather than silently falling
+        back — refresh is delegated to the CLI itself.
+        """
+        authjson_token = _load_authjson_token()
+        if authjson_token is not None:
+            try:
+                return self._fetch_usage_with_bearer(authjson_token)
+            except requests.exceptions.HTTPError as e:
+                response = getattr(e, "response", None)
+                if response is not None and response.status_code == 401:
+                    raise RuntimeError(
+                        "Codex auth.json access token is invalid or expired. "
+                        "Run `codex login` to refresh."
+                    ) from e
+                raise
+
         if not self.session_key:
             raise RuntimeError("CodexProvider not configured: session key missing")
-
-        access_token = _get_access_token(self.session_key, self.browser)
-        return self._fetch_usage_with_bearer(access_token)
+        cookie_token = _get_access_token(self.session_key, self.browser)
+        return self._fetch_usage_with_bearer(cookie_token)
 
     def _fetch_usage_with_bearer(self, access_token: str) -> list[UsageMetric]:
         """Issue the /wham/usage call with a bearer token and parse metrics.
