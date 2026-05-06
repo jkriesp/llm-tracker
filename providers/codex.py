@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import keyring
 import requests
@@ -100,6 +102,41 @@ def _unix_to_iso(epoch_seconds: int | float | None) -> str | None:
     return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
 
 
+DEFAULT_AUTHJSON_PATH = Path.home() / ".codex" / "auth.json"
+
+
+def _load_authjson_token(path: Path | None = None) -> str | None:
+    """Return the access_token from ~/.codex/auth.json, or None.
+
+    The official `codex` CLI writes this file (mode 0600) when the user
+    runs `codex login` and rotates the token there. We only ever read it
+    — refresh is delegated to the CLI itself. Any error (file missing,
+    malformed JSON, missing/blank token) returns None so the caller can
+    fall back to the cookie path or surface a "not configured" error.
+
+    Best-effort: this does not validate file mode, ownership, or whether
+    the path is a symlink. The CLI owns the file; we just read it. A
+    concurrent CLI rewrite that lands mid-read produces a JSONDecodeError
+    here and we return None — the next poll picks up the new token.
+    """
+    p = path if path is not None else DEFAULT_AUTHJSON_PATH
+    try:
+        raw = p.read_text()
+    except (FileNotFoundError, OSError, PermissionError):
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    token = tokens.get("access_token")
+    return token if isinstance(token, str) and token else None
+
+
 def _build_cookie_jar(session_key: str, browser_name: str | None = None) -> dict:
     """Cookies for a chatgpt.com API call.
 
@@ -183,14 +220,44 @@ class CodexProvider(BaseProvider):
             _delete_session_key()
 
     def is_configured(self) -> bool:
+        """True if either the official CLI's auth.json yields a token or we have
+        a session key cached. auth.json takes precedence at fetch time."""
+        if _load_authjson_token() is not None:
+            return True
         return bool(self.session_key)
 
     def fetch(self) -> list[UsageMetric]:
+        """Fetch usage metrics, preferring ~/.codex/auth.json over browser cookies.
+
+        When the official `codex` CLI is logged in, auth.json yields a fresh
+        JWT and the cookie path is skipped entirely. On 401 from the auth.json
+        path, we surface a `codex login` hint rather than silently falling
+        back — refresh is delegated to the CLI itself.
+        """
+        authjson_token = _load_authjson_token()
+        if authjson_token is not None:
+            try:
+                return self._fetch_usage_with_bearer(authjson_token)
+            except requests.exceptions.HTTPError as e:
+                response = getattr(e, "response", None)
+                if response is not None and response.status_code == 401:
+                    raise RuntimeError(
+                        "Codex auth.json token expired. Run `codex login` to refresh."
+                    ) from e
+                raise
+
         if not self.session_key:
             raise RuntimeError("CodexProvider not configured: session key missing")
+        cookie_token = _get_access_token(self.session_key, self.browser)
+        return self._fetch_usage_with_bearer(cookie_token)
 
-        access_token = _get_access_token(self.session_key, self.browser)
+    def _fetch_usage_with_bearer(self, access_token: str) -> list[UsageMetric]:
+        """Issue the /wham/usage call with a bearer token and parse metrics.
 
+        The token may come from either the NextAuth session exchange
+        (cookie path) or from ~/.codex/auth.json (CLI path). Both produce
+        JWTs the wham endpoint accepts.
+        """
         resp = requests.get(
             USAGE_ENDPOINT,
             headers={
