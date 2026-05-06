@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -631,6 +632,80 @@ class TestRefreshCookie:
         mock_extract.side_effect = Exception("Keychain denied")
         p = CodexProvider(browser="Chrome")
         assert p.refresh_cookie() is False
+
+
+# ── _load_authjson_token ──────────────────────────────────────────────────────
+
+
+class TestLoadAuthjsonToken:
+    """`_load_authjson_token` reads the access_token from ~/.codex/auth.json."""
+
+    def test_returns_token_when_well_formed(self, tmp_path):
+        from providers.codex import _load_authjson_token
+        p = tmp_path / "auth.json"
+        # Mirrors the real shape the codex CLI writes: lowercase enum for
+        # auth_mode, id_token as a raw JWT string (not an object).
+        p.write_text(json.dumps({
+            "tokens": {
+                "access_token": "jwt-abc",
+                "refresh_token": "rt-1",
+                "id_token": "header.payload.sig",
+                "account_id": "acc-1",
+            },
+            "auth_mode": "chatgpt",
+        }))
+        assert _load_authjson_token(p) == "jwt-abc"
+
+    def test_returns_none_when_file_missing(self, tmp_path):
+        from providers.codex import _load_authjson_token
+        assert _load_authjson_token(tmp_path / "missing.json") is None
+
+    def test_returns_none_when_json_malformed(self, tmp_path):
+        from providers.codex import _load_authjson_token
+        p = tmp_path / "auth.json"
+        p.write_text("{ not json")
+        assert _load_authjson_token(p) is None
+
+    def test_returns_none_when_tokens_key_missing(self, tmp_path):
+        from providers.codex import _load_authjson_token
+        p = tmp_path / "auth.json"
+        p.write_text(json.dumps({"auth_mode": "apikey"}))
+        assert _load_authjson_token(p) is None
+
+    def test_returns_none_when_access_token_missing(self, tmp_path):
+        from providers.codex import _load_authjson_token
+        p = tmp_path / "auth.json"
+        p.write_text(json.dumps({"tokens": {"refresh_token": "rt"}}))
+        assert _load_authjson_token(p) is None
+
+    def test_returns_none_when_access_token_empty(self, tmp_path):
+        from providers.codex import _load_authjson_token
+        p = tmp_path / "auth.json"
+        p.write_text(json.dumps({"tokens": {"access_token": ""}}))
+        assert _load_authjson_token(p) is None
+
+    def test_returns_none_when_tokens_not_dict(self, tmp_path):
+        from providers.codex import _load_authjson_token
+        p = tmp_path / "auth.json"
+        p.write_text(json.dumps({"tokens": "garbage"}))
+        assert _load_authjson_token(p) is None
+
+    def test_returns_none_when_top_level_not_dict(self, tmp_path):
+        from providers.codex import _load_authjson_token
+        p = tmp_path / "auth.json"
+        p.write_text(json.dumps(["not", "a", "dict"]))
+        assert _load_authjson_token(p) is None
+
+    def test_default_path_resolves_to_module_constant(self, tmp_path, monkeypatch):
+        from providers import codex as mod
+        fake_dir = tmp_path / ".codex"
+        fake_dir.mkdir()
+        fake_file = fake_dir / "auth.json"
+        fake_file.write_text(json.dumps(
+            {"tokens": {"access_token": "default-jwt"}}
+        ))
+        monkeypatch.setattr(mod, "DEFAULT_AUTHJSON_PATH", fake_file)
+        assert mod._load_authjson_token() == "default-jwt"
 
 
 # ── get_config_fields ─────────────────────────────────────────────────────────

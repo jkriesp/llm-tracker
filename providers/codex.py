@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import keyring
 import requests
@@ -98,6 +100,41 @@ def _unix_to_iso(epoch_seconds: int | float | None) -> str | None:
     if epoch_seconds is None:
         return None
     return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
+
+
+DEFAULT_AUTHJSON_PATH = Path.home() / ".codex" / "auth.json"
+
+
+def _load_authjson_token(path: Path | None = None) -> str | None:
+    """Return the access_token from ~/.codex/auth.json, or None.
+
+    The official `codex` CLI writes this file (mode 0600) when the user
+    runs `codex login` and rotates the token there. We only ever read it
+    — refresh is delegated to the CLI itself. Any error (file missing,
+    malformed JSON, missing/blank token) returns None so the caller can
+    fall back to the cookie path or surface a "not configured" error.
+
+    Best-effort: this does not validate file mode, ownership, or whether
+    the path is a symlink. The CLI owns the file; we just read it. A
+    concurrent CLI rewrite that lands mid-read produces a JSONDecodeError
+    here and we return None — the next poll picks up the new token.
+    """
+    p = path if path is not None else DEFAULT_AUTHJSON_PATH
+    try:
+        raw = p.read_text()
+    except (FileNotFoundError, OSError, PermissionError):
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    token = tokens.get("access_token")
+    return token if isinstance(token, str) and token else None
 
 
 def _build_cookie_jar(session_key: str, browser_name: str | None = None) -> dict:
