@@ -227,7 +227,15 @@ class CodexProvider(BaseProvider):
             raise RuntimeError("CodexProvider not configured: session key missing")
 
         access_token = _get_access_token(self.session_key, self.browser)
+        return self._fetch_usage_with_bearer(access_token)
 
+    def _fetch_usage_with_bearer(self, access_token: str) -> list[UsageMetric]:
+        """Issue the /wham/usage call with a bearer token and parse metrics.
+
+        The token may come from either the NextAuth session exchange
+        (cookie path) or from ~/.codex/auth.json (CLI path). Both produce
+        JWTs the wham endpoint accepts.
+        """
         resp = requests.get(
             USAGE_ENDPOINT,
             headers={
